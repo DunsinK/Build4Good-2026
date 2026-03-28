@@ -1,29 +1,106 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
   SafeAreaView,
-  Dimensions,
+  Platform,
 } from 'react-native';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Speech from 'expo-speech';
 import { useGame } from '../GameContext';
 
-export const PlayScreen = ({ navigation }) => {
-  const { currentGame, updateScore, endGame } = useGame();
+let CameraView, useCameraPermissions;
+if (Platform.OS !== 'web') {
+  const cam = require('expo-camera');
+  CameraView = cam.CameraView;
+  useCameraPermissions = cam.useCameraPermissions;
+}
+
+const WebCamera = () => {
+  const videoRef = useRef(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let stream = null;
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+        });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      } catch (err) {
+        setError(err.message);
+      }
+    })();
+    return () => {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  if (error) {
+    return (
+      <View style={styles.cameraPlaceholder}>
+        <Text style={styles.placeholderText}>Camera Unavailable</Text>
+        <Text style={styles.placeholderSubtext}>{error}</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ flex: 1, overflow: 'hidden' }}>
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+        }}
+      />
+    </View>
+  );
+};
+
+const NativeCamera = () => {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
 
-  useEffect(() => {
-    if (!permission?.granted) {
-      requestPermission();
-    }
-  }, [permission]);
+  if (!permission) {
+    return <View style={styles.cameraFeed} />;
+  }
+
+  if (!permission.granted) {
+    return (
+      <View style={styles.cameraPlaceholder}>
+        <Text style={styles.placeholderText}>Camera access needed</Text>
+        <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
+          <Text style={styles.permissionButtonText}>Grant Permission</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return <CameraView style={styles.cameraFeed} ref={cameraRef} facing="back" />;
+};
+
+const announce = (message) => {
+  Speech.speak(message, { rate: 1.0, pitch: 1.0 });
+};
+
+export const PlayScreen = ({ navigation }) => {
+  const { currentGame, updateScore, endGame } = useGame();
 
   if (!currentGame) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.containerLight}>
         <View style={styles.centerContent}>
           <Text style={styles.noGameText}>No game in progress</Text>
           <TouchableOpacity
@@ -37,76 +114,98 @@ export const PlayScreen = ({ navigation }) => {
     );
   }
 
+  const handleScore = (teamIndex, points) => {
+    updateScore(teamIndex, points);
+    const teamName = teamIndex === 1 ? currentGame.team1.name : currentGame.team2.name;
+    if (points > 0) {
+      announce(`${teamName} scored a point`);
+    } else {
+      announce(`${teamName} lost a point`);
+    }
+  };
+
   const handleEndGame = () => {
+    const t1 = currentGame.team1;
+    const t2 = currentGame.team2;
+    if (t1.score > t2.score) {
+      announce(`Game over. ${t1.name} wins ${t1.score} to ${t2.score}`);
+    } else if (t2.score > t1.score) {
+      announce(`Game over. ${t2.name} wins ${t2.score} to ${t1.score}`);
+    } else {
+      announce('Game over. It is a tie');
+    }
     endGame();
     navigation.navigate('Start');
   };
 
-  const TeamScoreCard = ({ teamIndex, team }) => (
-    <View style={styles.teamCard}>
-      <Text style={styles.teamName}>{team.name}</Text>
-      <View style={styles.scoreBox}>
-        <Text style={styles.scoreValue}>{team.score}</Text>
-      </View>
-      <View style={styles.scoreButtons}>
-        <TouchableOpacity
-          style={[styles.scoreBtn, styles.scoreBtnSmall]}
-          onPress={() => updateScore(teamIndex, 1)}
-        >
-          <Text style={styles.scoreBtnText}>+1</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.scoreBtn, styles.scoreBtnSmall]}
-          onPress={() => updateScore(teamIndex, 2)}
-        >
-          <Text style={styles.scoreBtnText}>+2</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.scoreBtn, styles.scoreBtnSmall]}
-          onPress={() => updateScore(teamIndex, 3)}
-        >
-          <Text style={styles.scoreBtnText}>+3</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Camera View */}
-      {permission?.granted && (
-        <CameraView style={styles.camera} ref={cameraRef} facing="back" />
-      )}
-
-      {/* Score Overlay */}
-      <View style={styles.overlay}>
-        {/* Header with navigation */}
+    <View style={styles.container}>
+      <SafeAreaView style={styles.safeTop}>
         <View style={styles.topBar}>
           <TouchableOpacity onPress={() => navigation.navigate('Start')}>
             <Text style={styles.navButton}>← Home</Text>
           </TouchableOpacity>
+          <Text style={styles.topTitle}>Called It</Text>
           <TouchableOpacity onPress={() => navigation.navigate('History')}>
             <Text style={styles.navButton}>History →</Text>
           </TouchableOpacity>
         </View>
+      </SafeAreaView>
 
-        {/* Team Score Cards */}
-        <View style={styles.scoreContainer}>
-          <TeamScoreCard teamIndex={1} team={currentGame.team1} />
-          <View style={styles.divider}>
-            <Text style={styles.dividerText}>VS</Text>
-          </View>
-          <TeamScoreCard teamIndex={2} team={currentGame.team2} />
-        </View>
-
-        {/* Bottom action buttons */}
-        <View style={styles.actionBar}>
-          <TouchableOpacity style={styles.endButton} onPress={handleEndGame}>
-            <Text style={styles.endButtonText}>⏹ End Game</Text>
-          </TouchableOpacity>
-        </View>
+      <View style={styles.cameraContainer}>
+        {Platform.OS === 'web' ? <WebCamera /> : <NativeCamera />}
       </View>
-    </SafeAreaView>
+
+      <View style={styles.scorePanel}>
+        <View style={styles.teamRow}>
+          <View style={styles.teamInfo}>
+            <Text style={styles.teamName}>{currentGame.team1.name}</Text>
+            <Text style={styles.scoreValue}>{currentGame.team1.score}</Text>
+          </View>
+          <View style={styles.scoreButtons}>
+            <TouchableOpacity
+              style={[styles.scoreBtn, styles.minusBtn]}
+              onPress={() => handleScore(1, -1)}
+            >
+              <Text style={styles.scoreBtnText}>−1</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.scoreBtn, styles.plusBtn]}
+              onPress={() => handleScore(1, 1)}
+            >
+              <Text style={styles.scoreBtnText}>+1</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={styles.divider} />
+
+        <View style={styles.teamRow}>
+          <View style={styles.teamInfo}>
+            <Text style={styles.teamName}>{currentGame.team2.name}</Text>
+            <Text style={styles.scoreValue}>{currentGame.team2.score}</Text>
+          </View>
+          <View style={styles.scoreButtons}>
+            <TouchableOpacity
+              style={[styles.scoreBtn, styles.minusBtn]}
+              onPress={() => handleScore(2, -1)}
+            >
+              <Text style={styles.scoreBtnText}>−1</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.scoreBtn, styles.plusBtn]}
+              onPress={() => handleScore(2, 1)}
+            >
+              <Text style={styles.scoreBtnText}>+1</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <TouchableOpacity style={styles.endButton} onPress={handleEndGame}>
+          <Text style={styles.endButtonText}>⏹ End Game</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 };
 
@@ -114,20 +213,145 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000',
+    flexDirection: 'column',
   },
-  camera: {
+  containerLight: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
+  safeTop: {
+    backgroundColor: '#111',
+  },
+  topBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#111',
+  },
+  topTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  navButton: {
+    color: '#007AFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  cameraContainer: {
+    flex: 1,
+    overflow: 'hidden',
+    minHeight: 0,
+  },
+  cameraFeed: {
     flex: 1,
   },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    padding: 15,
+  cameraPlaceholder: {
+    flex: 1,
+    backgroundColor: '#1a1a2e',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  placeholderText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  placeholderSubtext: {
+    color: '#888',
+    fontSize: 14,
+    textAlign: 'center',
+    paddingHorizontal: 40,
+  },
+  permissionButton: {
+    marginTop: 16,
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  permissionButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  scorePanel: {
+    backgroundColor: '#111',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    paddingBottom: 24,
+    borderTopWidth: 1,
+    borderTopColor: '#333',
+    flexShrink: 0,
+  },
+  teamRow: {
+    flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  teamInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  teamName: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    minWidth: 80,
+  },
+  scoreValue: {
+    color: '#FF6B6B',
+    fontSize: 32,
+    fontWeight: 'bold',
+  },
+  scoreButtons: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  scoreBtn: {
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+  },
+  plusBtn: {
+    backgroundColor: '#4CAF50',
+  },
+  minusBtn: {
+    backgroundColor: '#f44336',
+  },
+  scoreBtnText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#333',
+    marginVertical: 4,
+  },
+  endButton: {
+    backgroundColor: '#f44336',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  endButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
   },
   centerContent: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#fff',
   },
   noGameText: {
     fontSize: 18,
@@ -142,107 +366,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   homeButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 16,
-  },
-  topBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  navButton: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
-  },
-  scoreContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginVertical: 20,
-  },
-  teamCard: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    borderRadius: 12,
-    padding: 15,
-    marginHorizontal: 5,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#007AFF',
-  },
-  teamName: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: 'bold',
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  scoreBox: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#FF6B6B',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  scoreValue: {
-    color: '#fff',
-    fontSize: 40,
-    fontWeight: 'bold',
-  },
-  scoreButtons: {
-    flexDirection: 'row',
-    gap: 6,
-    width: '100%',
-    justifyContent: 'center',
-  },
-  scoreBtn: {
-    backgroundColor: '#4CAF50',
-    borderRadius: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-  },
-  scoreBtnSmall: {
-    minWidth: 45,
-  },
-  scoreBtnText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 12,
-    textAlign: 'center',
-  },
-  divider: {
-    marginHorizontal: 8,
-    marginVertical: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  dividerText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-  },
-  actionBar: {
-    alignItems: 'center',
-  },
-  endButton: {
-    backgroundColor: '#f44336',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  endButtonText: {
     color: '#fff',
     fontWeight: 'bold',
     fontSize: 16,
