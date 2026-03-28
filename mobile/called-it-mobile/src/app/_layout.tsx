@@ -38,6 +38,13 @@ export default function TabLayout() {
               animationEnabled: true,
             }}
           />
+          <Stack.Screen
+            name="referee"
+            options={{
+              title: 'AI Referee',
+              animationEnabled: true,
+            }}
+          />
         </Stack>
       </ThemeProvider>
     </GameProvider>

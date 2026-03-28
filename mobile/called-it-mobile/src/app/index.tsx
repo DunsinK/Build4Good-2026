@@ -113,6 +113,17 @@ export default function HomeScreen() {
             </ThemedText>
           </TouchableOpacity>
 
+          {/* AI Referee Button */}
+          <TouchableOpacity
+            onPress={() => router.push('/referee')}
+            style={styles.refereeButton}
+            activeOpacity={0.8}
+          >
+            <ThemedText type="defaultSemiBold" style={styles.startButtonText}>
+              AI Referee
+            </ThemedText>
+          </TouchableOpacity>
+
           {/* Info Section */}
           <ThemedView style={styles.infoBox}>
             <ThemedText type="defaultSemiBold" style={styles.infoTitle}>
@@ -181,6 +192,14 @@ const styles = StyleSheet.create({
   },
   startButton: {
     backgroundColor: '#007AFF',
+    paddingVertical: Spacing.three,
+    paddingHorizontal: Spacing.four,
+    borderRadius: Spacing.two,
+    alignItems: 'center',
+    marginBottom: Spacing.three,
+  },
+  refereeButton: {
+    backgroundColor: '#4CAF50',
     paddingVertical: Spacing.three,
     paddingHorizontal: Spacing.four,
     borderRadius: Spacing.two,
