@@ -13,13 +13,11 @@ const AppNavigator = () => {
     <Stack.Navigator
       screenOptions={{
         headerShown: false,
-        animationEnabled: true,
-        cardStyle: { backgroundColor: '#fff' },
       }}
     >
-      <Stack.Screen name="Start" component={StartScreen} options={{ title: 'Start' }} />
-      <Stack.Screen name="Play" component={PlayScreen} options={{ title: 'Play' }} />
-      <Stack.Screen name="History" component={HistoryScreen} options={{ title: 'History' }} />
+      <Stack.Screen name="Start" component={StartScreen} />
+      <Stack.Screen name="Play" component={PlayScreen} />
+      <Stack.Screen name="History" component={HistoryScreen} />
     </Stack.Navigator>
   );
 };
