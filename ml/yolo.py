@@ -5,7 +5,18 @@ Stateful pipeline that processes one BGR frame at a time and maintains
 session state (ball trajectory, court geometry, rally status) across
 frames. Returns structured dicts consumed by the backend orchestrator.
 
-Responsibilities split:
+Pipeline steps (see process_frame):
+  1. Increment frame counter
+  2. Preprocess frame              → _preprocess_frame
+  3. Detect / update court state   → _detect_court
+  4. Detect ball via YOLO          → _detect_ball_with_yolo
+  5. Append to trajectory history  → _update_ball_history
+  6. Estimate bounce candidate     → _detect_bounce
+  7. Determine provisional call    → _determine_call
+  8. Generate rally-end event      → _evaluate_rally_event
+  9. Return structured result      → _build_tracking_result / _build_decision_result
+
+Responsibility split:
   - YOLO  → ball detection, position, confidence
   - OpenCV → preprocessing, court lines, trajectory tracking,
              bounce detection, in/out classification, event generation
@@ -73,9 +84,9 @@ class PickleballRefereeEngine:
         self.last_bounce: Optional[BounceEvent] = None
         self.last_call: Optional[str] = None
         self.rally_active: bool = True
-        self.last_bounce_side: Optional[str] = None   # side of court where last bounce landed
-        self.bounce_count_left: int = 0                # consecutive bounces on the left side
-        self.bounce_count_right: int = 0               # consecutive bounces on the right side
+        self.last_bounce_side: Optional[str] = None
+        self.bounce_count_left: int = 0
+        self.bounce_count_right: int = 0
         self._frames_since_bounce: int = 999
 
         logger.info("PickleballRefereeEngine initialised")
@@ -87,74 +98,60 @@ class PickleballRefereeEngine:
     def process_frame(self, frame: np.ndarray) -> dict:
         """Run the full inference pipeline on a single BGR frame.
 
-        Returns a structured dict matching the project's response contract::
-
-            {
-                "type":            "tracking" | "decision",
-                "frame_index":     int,
-                "ball_detected":   bool,
-                "ball_position":   {"x": int, "y": int} | None,
-                "court_detected":  bool,
-                "bounce_detected": bool,
-                "call":            "IN" | "OUT" | None,
-                "event":           {...} | None,
-                "confidence":      float,
-                "message":         str | None,
-            }
+        Steps:
+          1. Increment frame_index
+          2. Preprocess frame
+          3. Detect or update court state
+          4. Detect ball using YOLO placeholder
+          5. Append ball position to history if found
+          6. Estimate bounce candidate from trajectory
+          7. Determine provisional call (IN / OUT / null)
+          8. Generate event candidate if rally should end
+          9. Return structured result dict
         """
+        # 1. Increment frame counter
         self.frame_index += 1
         self._frames_since_bounce += 1
 
-        preprocessed = self._preprocess(frame)
+        # 2. Preprocess
+        preprocessed = self._preprocess_frame(frame)
 
-        if not self.court_detected:
-            self._detect_court_lines(preprocessed)
+        # 3. Court detection / update
+        self._detect_court(preprocessed)
 
-        ball_pos = self._detect_ball(preprocessed)
-        ball_detected = ball_pos is not None
+        # 4. Ball detection (YOLO)
+        ball_pos = self._detect_ball_with_yolo(preprocessed)
 
+        # 5. Update trajectory history
         if ball_pos is not None:
             self._update_ball_history(ball_pos)
 
-        bounce_detected = False
-        bounce_confidence = 0.0
+        # 6. Bounce detection
+        bounce_detected, bounce_confidence = self._detect_bounce()
+
+        # 7. Provisional call + side determination
         call: Optional[str] = None
-        event: Optional[dict] = None
-        result_type = "tracking"
-
-        if self.rally_active and self._frames_since_bounce > self.BOUNCE_COOLDOWN:
-            bounce_detected, bounce_confidence = self._detect_bounce()
-
+        bounce_side: Optional[str] = None
         if bounce_detected and ball_pos is not None:
-            call = self._decide_in_out(ball_pos)
+            call = self._determine_call(ball_pos)
             bounce_side = self._determine_ball_side(ball_pos)
-            self.last_call = call
-            self.last_bounce = BounceEvent(
-                position=ball_pos,
-                call=call,
-                confidence=bounce_confidence,
-                frame_index=self.frame_index,
-            )
-            self._frames_since_bounce = 0
+            self._record_bounce(ball_pos, call, bounce_confidence, bounce_side)
 
-            self._update_bounce_counts(bounce_side)
+        # 8. Rally-end event evaluation
+        event: Optional[dict] = None
+        if bounce_detected and bounce_side is not None:
             event = self._evaluate_rally_event(call, bounce_side)
-            if event is not None:
-                result_type = "decision"
-                self.rally_active = False
 
-        return {
-            "type": result_type,
-            "frame_index": self.frame_index,
-            "ball_detected": ball_detected,
-            "ball_position": {"x": ball_pos.x, "y": ball_pos.y} if ball_pos else None,
-            "court_detected": self.court_detected,
-            "bounce_detected": bounce_detected,
-            "call": call,
-            "event": event,
-            "confidence": round(bounce_confidence, 4),
-            "message": self._build_message(ball_detected, bounce_detected, call, event),
-        }
+        # 9. Build and return result
+        if event is not None:
+            self.rally_active = False
+            return self._build_decision_result(
+                ball_pos, bounce_confidence, call, event,
+            )
+
+        return self._build_tracking_result(
+            ball_pos, bounce_detected, bounce_confidence, call,
+        )
 
     def reset_rally(self) -> None:
         """Called by the backend after a point is awarded to prepare for
@@ -168,33 +165,41 @@ class PickleballRefereeEngine:
         self._frames_since_bounce = 999
 
     # ------------------------------------------------------------------
-    # Preprocessing (OpenCV)
+    # Step 2 — Preprocessing (OpenCV)
     # ------------------------------------------------------------------
 
-    def _preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """Normalise the frame before detection.
+    def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Normalise the raw camera frame before running detection.
 
         TODO: Add real preprocessing
           - White-balance correction for outdoor/indoor lighting
           - Contrast-limited adaptive histogram equalisation (CLAHE)
-          - Resize to model input dimensions
+          - Gaussian blur to reduce noise
+          - Resize to YOLO model input dimensions (e.g. 640×640)
         """
         return frame
 
     # ------------------------------------------------------------------
-    # Court detection (OpenCV)
+    # Step 3 — Court detection (OpenCV)
     # ------------------------------------------------------------------
 
-    def _detect_court_lines(self, frame: np.ndarray) -> None:
-        """Identify court boundary polygon from the frame.
+    def _detect_court(self, frame: np.ndarray) -> None:
+        """Detect or update the court boundary polygon.
+
+        Only runs full detection on the first frame. On subsequent frames
+        the cached polygon is reused.
 
         TODO: Replace with real court detection
-          - Convert to HSV / edge map
-          - Hough line transform or segmentation model
+          - Convert to HSV / Canny edge map
+          - Hough line transform or U-Net segmentation model
           - Identify baseline, sidelines, kitchen (NVZ) line
-          - Fit polygon for point-in-polygon tests
+          - Fit convex polygon for point-in-polygon tests
           - Compute homography matrix for perspective correction
+          - Optionally re-detect every N frames to handle camera drift
         """
+        if self.court_detected:
+            return
+
         h, w = frame.shape[:2]
         mx, my = int(w * 0.1), int(h * 0.15)
         self.court_polygon = np.array([
@@ -203,20 +208,22 @@ class PickleballRefereeEngine:
         ], dtype=np.int32)
         self.court_center_x = w // 2
         self.court_detected = True
-        logger.info("Court lines detected (placeholder polygon, center_x=%d)", self.court_center_x)
+        logger.info("Court detected (placeholder polygon, center_x=%d)", self.court_center_x)
 
     # ------------------------------------------------------------------
-    # Ball detection (YOLO)
+    # Step 4 — Ball detection (YOLO)
     # ------------------------------------------------------------------
 
-    def _detect_ball(self, frame: np.ndarray) -> Optional[BallPosition]:
-        """Locate the pickleball in the current frame.
+    def _detect_ball_with_yolo(self, frame: np.ndarray) -> Optional[BallPosition]:
+        """Run YOLO inference to locate the pickleball in the frame.
 
         TODO: Replace with real YOLO inference
-          - Load YOLOv8/v11 model fine-tuned on pickleball data
-          - Run inference, filter detections by class + confidence
+          - Load YOLOv8/v11 model fine-tuned on pickleball dataset
+          - Run model.predict(frame) with confidence threshold ~0.4
+          - Filter detections by class ID (pickleball)
           - Apply NMS and return highest-confidence detection
-          - Fall back to colour-blob tracker when YOLO misses
+          - Fall back to colour-blob tracker (HSV mask) when YOLO misses
+          - Cache model instance in __init__ to avoid reload per frame
         """
         h, w = frame.shape[:2]
         if random.random() < 0.85:
@@ -229,47 +236,38 @@ class PickleballRefereeEngine:
         return None
 
     # ------------------------------------------------------------------
-    # Trajectory tracking (OpenCV)
+    # Step 5 — Trajectory history
     # ------------------------------------------------------------------
 
     def _update_ball_history(self, pos: BallPosition) -> None:
+        """Append a detected position to the rolling trajectory buffer."""
         self.ball_history.append(pos)
         if len(self.ball_history) > self.MAX_HISTORY:
             self.ball_history = self.ball_history[-self.MAX_HISTORY:]
 
-    def _determine_ball_side(self, ball_pos: BallPosition) -> str:
-        """Determine which side of the court the ball is on based on
-        its x-position relative to the court centre."""
-        return "left" if ball_pos.x < self.court_center_x else "right"
-
-    def _update_bounce_counts(self, bounce_side: str) -> None:
-        """Track consecutive bounces on each side for second-bounce detection."""
-        if bounce_side == self.last_bounce_side:
-            if bounce_side == "left":
-                self.bounce_count_left += 1
-            else:
-                self.bounce_count_right += 1
-        else:
-            self.bounce_count_left = 1 if bounce_side == "left" else 0
-            self.bounce_count_right = 1 if bounce_side == "right" else 0
-        self.last_bounce_side = bounce_side
-
     # ------------------------------------------------------------------
-    # Bounce detection (OpenCV / trajectory analysis)
+    # Step 6 — Bounce detection (OpenCV / trajectory analysis)
     # ------------------------------------------------------------------
 
     def _detect_bounce(self) -> tuple[bool, float]:
-        """Detect a bounce event by analysing vertical velocity changes.
+        """Analyse recent trajectory to detect a bounce candidate.
+
+        Only fires when the rally is active and enough frames have
+        passed since the last bounce (cooldown prevents duplicates).
 
         TODO: Replace with real bounce detection
-          - Compute vertical velocity (dy/dt) from ball_history
+          - Compute vertical velocity (dy/dt) from ball_history timestamps
           - Detect sign change in dy (downward → upward)
-          - Require minimum trajectory arc height
+          - Require minimum arc height to filter noise
           - Use acceleration thresholds to reduce false positives
-          - Return calibrated confidence
+          - Return calibrated confidence from model or heuristic
 
         Returns (bounce_detected, confidence).
         """
+        if not self.rally_active:
+            return False, 0.0
+        if self._frames_since_bounce <= self.BOUNCE_COOLDOWN:
+            return False, 0.0
         if len(self.ball_history) < 6:
             return False, 0.0
 
@@ -283,16 +281,19 @@ class PickleballRefereeEngine:
         return False, 0.0
 
     # ------------------------------------------------------------------
-    # In / Out classification (OpenCV)
+    # Step 7 — In / Out call (OpenCV)
     # ------------------------------------------------------------------
 
-    def _decide_in_out(self, ball_pos: BallPosition) -> Optional[str]:
-        """Check whether the bounce position falls inside the court polygon.
+    def _determine_call(self, ball_pos: BallPosition) -> Optional[str]:
+        """Determine whether the bounce landed IN or OUT of bounds.
+
+        Uses cv2.pointPolygonTest against the cached court polygon.
 
         TODO: Improve in/out logic
-          - Account for ball radius (~37 mm)
-          - Apply homography for perspective correction
-          - Use distance-from-line for marginal calls
+          - Account for ball radius (~37 mm → pixel radius via homography)
+          - Apply perspective correction before testing
+          - Use signed distance for marginal calls + confidence weighting
+          - Consider line width (ball touching line = IN)
         """
         if self.court_polygon is None:
             return None
@@ -304,25 +305,58 @@ class PickleballRefereeEngine:
         )
         return "IN" if dist >= 0 else "OUT"
 
+    def _determine_ball_side(self, ball_pos: BallPosition) -> str:
+        """Which side of the court the ball is on (left / right)."""
+        return "left" if ball_pos.x < self.court_center_x else "right"
+
     # ------------------------------------------------------------------
-    # Rally event evaluation
+    # Internal — bounce bookkeeping
+    # ------------------------------------------------------------------
+
+    def _record_bounce(
+        self,
+        ball_pos: BallPosition,
+        call: Optional[str],
+        confidence: float,
+        bounce_side: str,
+    ) -> None:
+        """Store bounce metadata and update per-side counters."""
+        self.last_call = call
+        self.last_bounce = BounceEvent(
+            position=ball_pos,
+            call=call or "IN",
+            confidence=confidence,
+            frame_index=self.frame_index,
+        )
+        self._frames_since_bounce = 0
+
+        if bounce_side == self.last_bounce_side:
+            if bounce_side == "left":
+                self.bounce_count_left += 1
+            else:
+                self.bounce_count_right += 1
+        else:
+            self.bounce_count_left = 1 if bounce_side == "left" else 0
+            self.bounce_count_right = 1 if bounce_side == "right" else 0
+        self.last_bounce_side = bounce_side
+
+    # ------------------------------------------------------------------
+    # Step 8 — Rally event evaluation
     # ------------------------------------------------------------------
 
     def _evaluate_rally_event(
-        self, call: Optional[str], bounce_side: str
+        self, call: Optional[str], bounce_side: str,
     ) -> Optional[dict]:
         """Decide whether the current bounce ends the rally.
 
-        Rally-ending conditions for MVP:
-          1. ball_out   — ball bounced outside the court
-          2. second_bounce — ball bounced twice on the same side
-          3. fault      — placeholder for future rule violations
+        MVP rally-ending conditions:
+          1. ball_out       — ball bounced outside the court
+          2. second_bounce  — ball bounced twice on the same side
+          3. fault          — placeholder for future rule violations
 
         Point logic (side-based):
-          - If ball lands OUT on the left side  → right gets the point
-          - If ball lands OUT on the right side → left gets the point
-          - If second bounce on the left side   → right gets the point
-          - If second bounce on the right side  → left gets the point
+          - Event on left side  → right gets the point
+          - Event on right side → left gets the point
 
         TODO: Expand event detection
           - Detect faults (serve into net, foot fault, kitchen violation)
@@ -330,7 +364,6 @@ class PickleballRefereeEngine:
         """
         opposite = "right" if bounce_side == "left" else "left"
 
-        # --- Ball out of bounds ---
         if call == "OUT":
             return {
                 "event_type": "rally_end",
@@ -339,7 +372,6 @@ class PickleballRefereeEngine:
                 "point_candidate": opposite,
             }
 
-        # --- Second bounce on the same side ---
         count = self.bounce_count_left if bounce_side == "left" else self.bounce_count_right
         if count >= 2:
             return {
@@ -349,34 +381,64 @@ class PickleballRefereeEngine:
                 "point_candidate": opposite,
             }
 
-        # TODO: fault detection placeholder
-        # if self._detect_fault():
-        #     return {
-        #         "event_type": "rally_end",
-        #         "reason": "fault",
-        #         "bounce_side": bounce_side,
-        #         "point_candidate": opposite,
-        #     }
+        # TODO: fault detection
+        # if self._detect_fault(bounce_side):
+        #     return {"event_type": "rally_end", "reason": "fault", ...}
 
         return None
 
     # ------------------------------------------------------------------
-    # Human-readable message
+    # Step 9 — Result builders
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _build_message(
-        ball_detected: bool,
+    def _build_tracking_result(
+        self,
+        ball_pos: Optional[BallPosition],
         bounce_detected: bool,
+        confidence: float,
         call: Optional[str],
-        event: Optional[dict],
-    ) -> Optional[str]:
-        if event:
-            reason = event.get("reason", "unknown")
-            winner = event.get("point_candidate", "unknown")
-            return f"Rally ended ({reason}) — point candidate: {winner}"
+    ) -> dict:
+        """Build a type="tracking" response for a normal frame."""
+        ball_detected = ball_pos is not None
+        message = None
         if bounce_detected and call:
-            return f"Bounce detected — {call}"
-        if not ball_detected:
-            return "Ball not detected"
-        return None
+            message = f"Bounce detected — {call}"
+        elif not ball_detected:
+            message = "Ball not detected"
+
+        return {
+            "type": "tracking",
+            "frame_index": self.frame_index,
+            "ball_detected": ball_detected,
+            "ball_position": {"x": ball_pos.x, "y": ball_pos.y} if ball_pos else None,
+            "court_detected": self.court_detected,
+            "bounce_detected": bounce_detected,
+            "call": call,
+            "event": None,
+            "confidence": round(confidence, 4),
+            "message": message,
+        }
+
+    def _build_decision_result(
+        self,
+        ball_pos: Optional[BallPosition],
+        confidence: float,
+        call: Optional[str],
+        event: dict,
+    ) -> dict:
+        """Build a type="decision" response for a rally-ending frame."""
+        reason = event.get("reason", "unknown")
+        winner = event.get("point_candidate", "unknown")
+
+        return {
+            "type": "decision",
+            "frame_index": self.frame_index,
+            "ball_detected": ball_pos is not None,
+            "ball_position": {"x": ball_pos.x, "y": ball_pos.y} if ball_pos else None,
+            "court_detected": self.court_detected,
+            "bounce_detected": True,
+            "call": call,
+            "event": event,
+            "confidence": round(confidence, 4),
+            "message": f"Rally ended ({reason}) — point candidate: {winner}",
+        }
