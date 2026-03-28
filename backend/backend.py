@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from ml.yolo import PickleballRefereeEngine
-from backend.score import determine_point_winner
+from score import determine_point_winner
 
 logging.basicConfig(
     level=logging.INFO,
