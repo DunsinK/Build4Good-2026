@@ -14,17 +14,13 @@ Called It uses computer vision to track the ball, detect bounces, make IN/OUT li
 │   ├── __init__.py
 │   └── yolo.py          # PickleballRefereeEngine — CV pipeline
 ├── mobile/
-│   └── called-it-mobile/  # Expo React Native app
-│       └── src/
-│           ├── app/
-│           │   ├── index.tsx       # Home screen
-│           │   ├── referee.tsx     # AI Referee screen (camera + WebSocket)
-│           │   ├── live-game.tsx   # Manual scorekeeping
-│           │   └── history.tsx     # Game history
-│           ├── hooks/
-│           │   └── use-referee-socket.ts  # WebSocket hook
-│           └── context/
-│               └── GameContext.tsx  # Game state provider
+│   └── called-it-mobile3/  # Expo React Native app
+│       ├── App.js            # Root navigator
+│       ├── GameContext.js     # Game state provider
+│       └── screens/
+│           ├── StartScreen.js    # Home / new game
+│           ├── PlayScreen.js     # Camera + score (main game)
+│           └── HistoryScreen.js  # Past games
 ├── shared/
 │   └── api_contracts.json  # Backend/frontend response contract
 ├── docs/
@@ -47,21 +43,37 @@ Called It uses computer vision to track the ball, detect bounces, make IN/OUT li
 
 ## Running the Backend
 
+Requires **Python 3.10+**.
+
+**macOS / Linux:**
 ```bash
 pip install -r requirements.txt
 cd backend
 python backend.py
 ```
 
+**Windows (PowerShell):**
+```powershell
+pip install -r requirements.txt
+cd backend
+python backend.py
+```
+
+If you get an import error on Windows, make sure you're running from inside the `backend/` folder, not the repo root.
+
 Server starts on `http://0.0.0.0:8000`.
 
 ## Running the Mobile App
 
+Requires **Node.js 18+**.
+
 ```bash
-cd mobile/called-it-mobile
+cd mobile/called-it-mobile3
 npm install
 npx expo start
 ```
+
+Press `w` to open in web, or scan the QR code with Expo Go on your phone.
 
 ## Tech Stack
 
