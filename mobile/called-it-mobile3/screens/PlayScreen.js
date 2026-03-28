@@ -21,7 +21,7 @@ if (Platform.OS !== 'web') {
 
 const DEFAULT_SERVER = Platform.OS === 'web'
   ? 'ws://localhost:8000/ws/referee'
-  : 'ws://10.0.2.2:8000/ws/referee'; // Android emulator localhost alias
+  : 'ws://10.248.237.238:8000/ws/referee';
 
 const FRAME_INTERVAL_MS = 250; // ~4 fps
 
