@@ -69,10 +69,13 @@ class PickleballRefereeEngine:
         self.ball_history: list[BallPosition] = []
         self.court_polygon: Optional[np.ndarray] = None
         self.court_detected: bool = False
+        self.court_center_x: int = 0
         self.last_bounce: Optional[BounceEvent] = None
         self.last_call: Optional[str] = None
         self.rally_active: bool = True
-        self.last_hitter_side: Optional[str] = None  # "left" | "right"
+        self.last_bounce_side: Optional[str] = None   # side of court where last bounce landed
+        self.bounce_count_left: int = 0                # consecutive bounces on the left side
+        self.bounce_count_right: int = 0               # consecutive bounces on the right side
         self._frames_since_bounce: int = 999
 
         logger.info("PickleballRefereeEngine initialised")
@@ -112,7 +115,6 @@ class PickleballRefereeEngine:
 
         if ball_pos is not None:
             self._update_ball_history(ball_pos)
-            self.last_hitter_side = self._estimate_hitter_side(ball_pos, frame)
 
         bounce_detected = False
         bounce_confidence = 0.0
@@ -125,6 +127,7 @@ class PickleballRefereeEngine:
 
         if bounce_detected and ball_pos is not None:
             call = self._decide_in_out(ball_pos)
+            bounce_side = self._determine_ball_side(ball_pos)
             self.last_call = call
             self.last_bounce = BounceEvent(
                 position=ball_pos,
@@ -134,7 +137,8 @@ class PickleballRefereeEngine:
             )
             self._frames_since_bounce = 0
 
-            event = self._evaluate_rally_event(call)
+            self._update_bounce_counts(bounce_side)
+            event = self._evaluate_rally_event(call, bounce_side)
             if event is not None:
                 result_type = "decision"
                 self.rally_active = False
@@ -157,7 +161,9 @@ class PickleballRefereeEngine:
         the next rally."""
         self.rally_active = True
         self.last_call = None
-        self.last_hitter_side = None
+        self.last_bounce_side = None
+        self.bounce_count_left = 0
+        self.bounce_count_right = 0
         self.ball_history.clear()
         self._frames_since_bounce = 999
 
@@ -195,8 +201,9 @@ class PickleballRefereeEngine:
             [mx, my], [w - mx, my],
             [w - mx, h - my], [mx, h - my],
         ], dtype=np.int32)
+        self.court_center_x = w // 2
         self.court_detected = True
-        logger.info("Court lines detected (placeholder polygon)")
+        logger.info("Court lines detected (placeholder polygon, center_x=%d)", self.court_center_x)
 
     # ------------------------------------------------------------------
     # Ball detection (YOLO)
@@ -230,17 +237,22 @@ class PickleballRefereeEngine:
         if len(self.ball_history) > self.MAX_HISTORY:
             self.ball_history = self.ball_history[-self.MAX_HISTORY:]
 
-    def _estimate_hitter_side(
-        self, ball_pos: BallPosition, frame: np.ndarray
-    ) -> Optional[str]:
-        """Rough estimate of which side last hit the ball based on x-position.
+    def _determine_ball_side(self, ball_pos: BallPosition) -> str:
+        """Determine which side of the court the ball is on based on
+        its x-position relative to the court centre."""
+        return "left" if ball_pos.x < self.court_center_x else "right"
 
-        TODO: Replace with real hitter estimation
-          - Use player pose estimation or bounding boxes
-          - Track which player swung most recently
-        """
-        w = frame.shape[1]
-        return "left" if ball_pos.x < w / 2 else "right"
+    def _update_bounce_counts(self, bounce_side: str) -> None:
+        """Track consecutive bounces on each side for second-bounce detection."""
+        if bounce_side == self.last_bounce_side:
+            if bounce_side == "left":
+                self.bounce_count_left += 1
+            else:
+                self.bounce_count_right += 1
+        else:
+            self.bounce_count_left = 1 if bounce_side == "left" else 0
+            self.bounce_count_right = 1 if bounce_side == "right" else 0
+        self.last_bounce_side = bounce_side
 
     # ------------------------------------------------------------------
     # Bounce detection (OpenCV / trajectory analysis)
@@ -296,24 +308,56 @@ class PickleballRefereeEngine:
     # Rally event evaluation
     # ------------------------------------------------------------------
 
-    def _evaluate_rally_event(self, call: Optional[str]) -> Optional[dict]:
+    def _evaluate_rally_event(
+        self, call: Optional[str], bounce_side: str
+    ) -> Optional[dict]:
         """Decide whether the current bounce ends the rally.
 
+        Rally-ending conditions for MVP:
+          1. ball_out   — ball bounced outside the court
+          2. second_bounce — ball bounced twice on the same side
+          3. fault      — placeholder for future rule violations
+
+        Point logic (side-based):
+          - If ball lands OUT on the left side  → right gets the point
+          - If ball lands OUT on the right side → left gets the point
+          - If second bounce on the left side   → right gets the point
+          - If second bounce on the right side  → left gets the point
+
         TODO: Expand event detection
-          - Detect second-bounce (ball bounces twice on same side)
           - Detect faults (serve into net, foot fault, kitchen violation)
           - Use ball trajectory + player positions for net detection
         """
+        opposite = "right" if bounce_side == "left" else "left"
+
+        # --- Ball out of bounds ---
         if call == "OUT":
-            hitter = self.last_hitter_side
-            winner = "right" if hitter == "left" else "left"
             return {
                 "event_type": "rally_end",
                 "reason": "ball_out",
-                "point_candidate": winner,
+                "bounce_side": bounce_side,
+                "point_candidate": opposite,
             }
 
-        # TODO: detect second_bounce, fault, etc.
+        # --- Second bounce on the same side ---
+        count = self.bounce_count_left if bounce_side == "left" else self.bounce_count_right
+        if count >= 2:
+            return {
+                "event_type": "rally_end",
+                "reason": "second_bounce",
+                "bounce_side": bounce_side,
+                "point_candidate": opposite,
+            }
+
+        # TODO: fault detection placeholder
+        # if self._detect_fault():
+        #     return {
+        #         "event_type": "rally_end",
+        #         "reason": "fault",
+        #         "bounce_side": bounce_side,
+        #         "point_candidate": opposite,
+        #     }
+
         return None
 
     # ------------------------------------------------------------------
