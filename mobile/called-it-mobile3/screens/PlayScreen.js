@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,8 @@ import {
   StyleSheet,
   SafeAreaView,
   Platform,
+  TextInput,
+  Animated,
 } from 'react-native';
 import * as Speech from 'expo-speech';
 import { useGame } from '../GameContext';
@@ -17,16 +19,62 @@ if (Platform.OS !== 'web') {
   useCameraPermissions = cam.useCameraPermissions;
 }
 
-const WebCamera = () => {
+const DEFAULT_SERVER = Platform.OS === 'web'
+  ? 'ws://localhost:8000/ws/referee'
+  : 'ws://10.0.2.2:8000/ws/referee'; // Android emulator localhost alias
+
+const FRAME_INTERVAL_MS = 250; // ~4 fps
+
+// ---------------------------------------------------------------
+// Web camera with frame capture
+// ---------------------------------------------------------------
+const WebCamera = React.forwardRef(({ onFrame }, ref) => {
   const videoRef = useRef(null);
+  const canvasRef = useRef(null);
   const [error, setError] = useState(null);
+  const intervalRef = useRef(null);
+
+  React.useImperativeHandle(ref, () => ({
+    startCapture: () => {
+      if (intervalRef.current) return;
+      intervalRef.current = setInterval(() => {
+        captureFrame();
+      }, FRAME_INTERVAL_MS);
+    },
+    stopCapture: () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    },
+  }));
+
+  const captureFrame = useCallback(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2) return;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+    canvas.toBlob(
+      (blob) => {
+        if (blob && onFrame) {
+          blob.arrayBuffer().then((buf) => onFrame(buf));
+        }
+      },
+      'image/jpeg',
+      0.7,
+    );
+  }, [onFrame]);
 
   useEffect(() => {
     let stream = null;
     (async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
+          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
         });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -37,6 +85,7 @@ const WebCamera = () => {
     })();
     return () => {
       if (stream) stream.getTracks().forEach((t) => t.stop());
+      if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, []);
 
@@ -65,17 +114,57 @@ const WebCamera = () => {
           objectFit: 'cover',
         }}
       />
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
     </View>
   );
-};
+});
 
-const NativeCamera = () => {
+// ---------------------------------------------------------------
+// Native camera with frame capture
+// ---------------------------------------------------------------
+const NativeCamera = React.forwardRef(({ onFrame }, ref) => {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
+  const intervalRef = useRef(null);
 
-  if (!permission) {
-    return <View style={styles.cameraFeed} />;
-  }
+  React.useImperativeHandle(ref, () => ({
+    startCapture: () => {
+      if (intervalRef.current) return;
+      intervalRef.current = setInterval(() => {
+        captureFrame();
+      }, FRAME_INTERVAL_MS);
+    },
+    stopCapture: () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    },
+  }));
+
+  const captureFrame = useCallback(async () => {
+    if (!cameraRef.current) return;
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.5,
+        base64: true,
+        skipProcessing: true,
+      });
+      if (photo?.base64 && onFrame) {
+        onFrame(photo.base64);
+      }
+    } catch {
+      // Camera might be busy, skip frame
+    }
+  }, [onFrame]);
+
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+
+  if (!permission) return <View style={styles.cameraFeed} />;
 
   if (!permission.granted) {
     return (
@@ -89,15 +178,201 @@ const NativeCamera = () => {
   }
 
   return <CameraView style={styles.cameraFeed} ref={cameraRef} facing="back" />;
+});
+
+// ---------------------------------------------------------------
+// Call banner overlay
+// ---------------------------------------------------------------
+const CallBanner = ({ call, visible }) => {
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (visible) {
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+        Animated.delay(2000),
+        Animated.timing(opacity, { toValue: 0, duration: 500, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [visible, call]);
+
+  if (!call) return null;
+
+  const isOut = call === 'OUT';
+  return (
+    <Animated.View
+      style={[
+        styles.callBanner,
+        { opacity, backgroundColor: isOut ? 'rgba(244,67,54,0.9)' : 'rgba(76,175,80,0.9)' },
+      ]}
+    >
+      <Text style={styles.callBannerText}>{call}</Text>
+    </Animated.View>
+  );
 };
 
+// ---------------------------------------------------------------
+// Announce helper
+// ---------------------------------------------------------------
 const announce = (message) => {
   Speech.speak(message, { rate: 1.0, pitch: 1.0 });
 };
 
+// ---------------------------------------------------------------
+// Main PlayScreen
+// ---------------------------------------------------------------
 export const PlayScreen = ({ navigation }) => {
-  const { currentGame, updateScore, endGame } = useGame();
+  const {
+    currentGame, updateScore, endGame, awardPoint, addCall,
+    wsStatus, setWsStatus, ballPosition, setBallPosition,
+  } = useGame();
 
+  const wsRef = useRef(null);
+  const cameraRef = useRef(null);
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [showCallBanner, setShowCallBanner] = useState(false);
+  const [currentCall, setCurrentCall] = useState(null);
+  const [frameCount, setFrameCount] = useState(0);
+  const [statusMessage, setStatusMessage] = useState('Tap Connect to start');
+
+  // ---- WebSocket connection ----
+  const connectWs = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState <= 1) return;
+
+    setWsStatus('connecting');
+    setStatusMessage('Connecting...');
+
+    const ws = new WebSocket(serverUrl);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      setWsStatus('connected');
+      setStatusMessage('Connected — tap Start Streaming');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleServerMessage(data);
+      } catch {
+        // Not JSON, ignore
+      }
+    };
+
+    ws.onerror = () => {
+      setWsStatus('error');
+      setStatusMessage('Connection failed — check server');
+    };
+
+    ws.onclose = () => {
+      setWsStatus('disconnected');
+      setIsStreaming(false);
+      cameraRef.current?.stopCapture();
+      setStatusMessage('Disconnected');
+    };
+
+    wsRef.current = ws;
+  }, [serverUrl]);
+
+  const disconnectWs = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setIsStreaming(false);
+    cameraRef.current?.stopCapture();
+    setWsStatus('disconnected');
+    setStatusMessage('Disconnected');
+  }, []);
+
+  // ---- Handle server messages ----
+  const handleServerMessage = useCallback((data) => {
+    if (data.type === 'connected') {
+      setStatusMessage('Engine ready — tap Start Streaming');
+      return;
+    }
+
+    if (data.type === 'error') {
+      setStatusMessage(data.message || 'Server error');
+      return;
+    }
+
+    if (data.frame_index) {
+      setFrameCount(data.frame_index);
+    }
+
+    if (data.ball_position) {
+      setBallPosition(data.ball_position);
+    } else {
+      setBallPosition(null);
+    }
+
+    if (data.type === 'tracking' && data.bounce_detected && data.call) {
+      setCurrentCall(data.call);
+      setShowCallBanner(true);
+      addCall({ call: data.call, confidence: data.confidence, type: 'tracking' });
+      setTimeout(() => setShowCallBanner(false), 2500);
+    }
+
+    if (data.type === 'decision') {
+      setCurrentCall(data.call);
+      setShowCallBanner(true);
+      setTimeout(() => setShowCallBanner(false), 3000);
+
+      addCall({
+        call: data.call,
+        confidence: data.confidence,
+        pointTo: data.point_awarded_to,
+        reason: data.message,
+        type: 'decision',
+      });
+
+      if (data.point_awarded_to) {
+        awardPoint(data.point_awarded_to);
+        if (data.audio_text) {
+          announce(data.audio_text);
+        }
+        setStatusMessage(data.message || `Point: ${data.point_awarded_to}`);
+      }
+    }
+  }, [awardPoint, addCall, setBallPosition]);
+
+  // ---- Frame sending ----
+  const sendFrame = useCallback((frameData) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    if (frameData instanceof ArrayBuffer) {
+      wsRef.current.send(frameData);
+    } else if (typeof frameData === 'string') {
+      wsRef.current.send(JSON.stringify({ frame: frameData }));
+    }
+  }, []);
+
+  const toggleStreaming = useCallback(() => {
+    if (isStreaming) {
+      cameraRef.current?.stopCapture();
+      setIsStreaming(false);
+      setStatusMessage('Streaming paused');
+    } else {
+      cameraRef.current?.startCapture();
+      setIsStreaming(true);
+      setStatusMessage('Streaming...');
+    }
+  }, [isStreaming]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      cameraRef.current?.stopCapture();
+    };
+  }, []);
+
+  // ---- No game state ----
   if (!currentGame) {
     return (
       <SafeAreaView style={styles.containerLight}>
@@ -107,24 +382,30 @@ export const PlayScreen = ({ navigation }) => {
             style={styles.homeButton}
             onPress={() => navigation.navigate('Start')}
           >
-            <Text style={styles.homeButtonText}>← Back to Home</Text>
+            <Text style={styles.homeButtonText}>Back to Home</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
     );
   }
 
+  // ---- Render ----
+  const isConnected = wsStatus === 'connected';
+  const statusColor = {
+    disconnected: '#888',
+    connecting: '#FFA000',
+    connected: '#4CAF50',
+    error: '#f44336',
+  }[wsStatus];
+
   const handleScore = (teamIndex, points) => {
     updateScore(teamIndex, points);
     const teamName = teamIndex === 1 ? currentGame.team1.name : currentGame.team2.name;
-    if (points > 0) {
-      announce(`${teamName} scored a point`);
-    } else {
-      announce(`${teamName} lost a point`);
-    }
+    if (points > 0) announce(`${teamName} scored a point`);
   };
 
   const handleEndGame = () => {
+    disconnectWs();
     const t1 = currentGame.team1;
     const t2 = currentGame.team2;
     if (t1.score > t2.score) {
@@ -143,19 +424,84 @@ export const PlayScreen = ({ navigation }) => {
       <SafeAreaView style={styles.safeTop}>
         <View style={styles.topBar}>
           <TouchableOpacity onPress={() => navigation.navigate('Start')}>
-            <Text style={styles.navButton}>← Home</Text>
+            <Text style={styles.navButton}>Home</Text>
           </TouchableOpacity>
-          <Text style={styles.topTitle}>Called It</Text>
+          <View style={styles.statusRow}>
+            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+            <Text style={styles.topTitle}>Called It</Text>
+          </View>
           <TouchableOpacity onPress={() => navigation.navigate('History')}>
-            <Text style={styles.navButton}>History →</Text>
+            <Text style={styles.navButton}>History</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
 
+      {/* Camera area with overlays */}
       <View style={styles.cameraContainer}>
-        {Platform.OS === 'web' ? <WebCamera /> : <NativeCamera />}
+        {Platform.OS === 'web' ? (
+          <WebCamera ref={cameraRef} onFrame={sendFrame} />
+        ) : (
+          <NativeCamera ref={cameraRef} onFrame={sendFrame} />
+        )}
+
+        {/* Ball position indicator */}
+        {ballPosition && (
+          <View
+            style={[
+              styles.ballIndicator,
+              { left: ballPosition.x - 8, top: ballPosition.y - 8 },
+            ]}
+          />
+        )}
+
+        {/* Call banner */}
+        <CallBanner call={currentCall} visible={showCallBanner} />
+
+        {/* Status bar overlay */}
+        <View style={styles.statusOverlay}>
+          <Text style={styles.statusText}>{statusMessage}</Text>
+          {isStreaming && <Text style={styles.frameText}>Frame: {frameCount}</Text>}
+        </View>
       </View>
 
+      {/* Connection controls */}
+      <View style={styles.connectionBar}>
+        <TextInput
+          style={styles.serverInput}
+          value={serverUrl}
+          onChangeText={setServerUrl}
+          placeholder="ws://host:port/ws/referee"
+          placeholderTextColor="#666"
+          editable={!isConnected}
+        />
+        <View style={styles.connectionButtons}>
+          {!isConnected ? (
+            <TouchableOpacity
+              style={[styles.connBtn, { backgroundColor: '#4CAF50' }]}
+              onPress={connectWs}
+            >
+              <Text style={styles.connBtnText}>Connect</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity
+                style={[styles.connBtn, { backgroundColor: isStreaming ? '#FFA000' : '#2196F3' }]}
+                onPress={toggleStreaming}
+              >
+                <Text style={styles.connBtnText}>{isStreaming ? 'Pause' : 'Stream'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.connBtn, { backgroundColor: '#f44336' }]}
+                onPress={disconnectWs}
+              >
+                <Text style={styles.connBtnText}>Stop</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+      </View>
+
+      {/* Score panel */}
       <View style={styles.scorePanel}>
         <View style={styles.teamRow}>
           <View style={styles.teamInfo}>
@@ -167,7 +513,7 @@ export const PlayScreen = ({ navigation }) => {
               style={[styles.scoreBtn, styles.minusBtn]}
               onPress={() => handleScore(1, -1)}
             >
-              <Text style={styles.scoreBtnText}>−1</Text>
+              <Text style={styles.scoreBtnText}>-1</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.scoreBtn, styles.plusBtn]}
@@ -190,7 +536,7 @@ export const PlayScreen = ({ navigation }) => {
               style={[styles.scoreBtn, styles.minusBtn]}
               onPress={() => handleScore(2, -1)}
             >
-              <Text style={styles.scoreBtnText}>−1</Text>
+              <Text style={styles.scoreBtnText}>-1</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.scoreBtn, styles.plusBtn]}
@@ -202,13 +548,16 @@ export const PlayScreen = ({ navigation }) => {
         </View>
 
         <TouchableOpacity style={styles.endButton} onPress={handleEndGame}>
-          <Text style={styles.endButtonText}>⏹ End Game</Text>
+          <Text style={styles.endButtonText}>End Game</Text>
         </TouchableOpacity>
       </View>
     </View>
   );
 };
 
+// ---------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -230,6 +579,16 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     backgroundColor: '#111',
   },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
   topTitle: {
     color: '#fff',
     fontSize: 18,
@@ -244,6 +603,7 @@ const styles = StyleSheet.create({
     flex: 1,
     overflow: 'hidden',
     minHeight: 0,
+    position: 'relative',
   },
   cameraFeed: {
     flex: 1,
@@ -278,11 +638,89 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 16,
   },
+  ballIndicator: {
+    position: 'absolute',
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 235, 59, 0.8)',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  callBanner: {
+    position: 'absolute',
+    top: '40%',
+    alignSelf: 'center',
+    paddingHorizontal: 40,
+    paddingVertical: 16,
+    borderRadius: 12,
+  },
+  callBannerText: {
+    color: '#fff',
+    fontSize: 36,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  statusOverlay: {
+    position: 'absolute',
+    bottom: 8,
+    left: 8,
+    right: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  statusText: {
+    color: '#ccc',
+    fontSize: 11,
+  },
+  frameText: {
+    color: '#aaa',
+    fontSize: 11,
+  },
+  connectionBar: {
+    backgroundColor: '#1a1a1a',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#333',
+  },
+  serverInput: {
+    flex: 1,
+    backgroundColor: '#222',
+    color: '#fff',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    fontSize: 12,
+    borderWidth: 1,
+    borderColor: '#444',
+  },
+  connectionButtons: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  connBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  connBtnText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
   scorePanel: {
     backgroundColor: '#111',
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    paddingBottom: 24,
+    paddingVertical: 10,
+    paddingBottom: 20,
     borderTopWidth: 1,
     borderTopColor: '#333',
     flexShrink: 0,
@@ -291,7 +729,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 6,
   },
   teamInfo: {
     flexDirection: 'row',
@@ -341,7 +779,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 8,
     alignItems: 'center',
-    marginTop: 12,
+    marginTop: 10,
   },
   endButtonText: {
     color: '#fff',

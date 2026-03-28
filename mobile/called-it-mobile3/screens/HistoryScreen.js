@@ -31,7 +31,7 @@ export const HistoryScreen = ({ navigation }) => {
       <View style={styles.gameCard}>
         <View style={styles.cardHeader}>
           <Text style={styles.dateText}>{formatDate(game.startTime)}</Text>
-          <Text style={styles.durationText}>Duratio: {calculateDuration(game.startTime, game.endTime)}</Text>
+          <Text style={styles.durationText}>Duration: {calculateDuration(game.startTime, game.endTime)}</Text>
         </View>
 
         <View style={styles.scoreRow}>
