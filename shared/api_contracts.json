@@ -1,0 +1,87 @@
+{
+  "description": "API contracts between the mobile app and the backend server.",
+
+  "rest": {
+    "GET /health": {
+      "response": { "status": "ok" }
+    },
+    "POST /game/start": {
+      "request": { "mode": "singles | doubles" },
+      "response": "GameState"
+    },
+    "GET /game/state": {
+      "response": "GameState"
+    },
+    "POST /game/rally": {
+      "request": { "winner": "server | receiver" },
+      "response": "RallyResult"
+    },
+    "POST /game/score/correct": {
+      "request": { "side_0": 0, "side_1": 0 },
+      "response": "GameState"
+    },
+    "POST /game/switch-server": {
+      "response": "GameState"
+    },
+    "GET /game/calls?last_n=N": {
+      "response": "CallRecord[]"
+    },
+    "POST /game/reset": {
+      "request": { "mode": "singles | doubles" },
+      "response": "GameState"
+    }
+  },
+
+  "websocket": {
+    "endpoint": "/ws/referee",
+    "client_sends": "Raw binary (JPEG/PNG) or base64 string",
+    "server_sends": "FrameResult (tracking or decision)"
+  },
+
+  "types": {
+    "GameState": {
+      "mode": "singles | doubles",
+      "scores": [0, 0],
+      "serving_side": "0 | 1",
+      "server_number": "1 | 2 (doubles only)",
+      "game_over": false,
+      "winner": "0 | 1 | null",
+      "rally_count": 0,
+      "call_count": 0,
+      "score_display": "0-0 (singles) | 0-0-2 (doubles)"
+    },
+    "RallyResult": {
+      "scored": true,
+      "side_out": false,
+      "point_for": "0 | 1 | null",
+      "prev_scores": [0, 0],
+      "prev_server": "0 | 1",
+      "prev_server_number": "1 | 2",
+      "...GameState": "all GameState fields included"
+    },
+    "CallRecord": {
+      "call": "IN | OUT",
+      "confidence": 0.95,
+      "timestamp": 1711612800.0,
+      "frame_index": 42,
+      "rally_winner": "server | receiver | null"
+    },
+    "FrameResult_tracking": {
+      "type": "tracking",
+      "ball_position": { "x": 320, "y": 480 },
+      "bounce_detected": false,
+      "call": null,
+      "confidence": 0.0,
+      "frame_index": 42
+    },
+    "FrameResult_decision": {
+      "type": "decision",
+      "ball_position": { "x": 310, "y": 475 },
+      "bounce_detected": true,
+      "call": "IN | OUT",
+      "confidence": 0.92,
+      "frame_index": 87,
+      "game": "GameState (included when a game is active)"
+    }
+  }
+}
