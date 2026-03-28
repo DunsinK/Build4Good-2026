@@ -6,7 +6,6 @@ import {
   StyleSheet,
   SafeAreaView,
   Platform,
-  TextInput,
   Animated,
 } from 'react-native';
 import * as Speech from 'expo-speech';
@@ -229,74 +228,20 @@ export const PlayScreen = ({ navigation }) => {
 
   const wsRef = useRef(null);
   const cameraRef = useRef(null);
-  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER);
-  const [isStreaming, setIsStreaming] = useState(false);
+  const reconnectTimer = useRef(null);
   const [showCallBanner, setShowCallBanner] = useState(false);
   const [currentCall, setCurrentCall] = useState(null);
   const [frameCount, setFrameCount] = useState(0);
-  const [statusMessage, setStatusMessage] = useState('Tap Connect to start');
-
-  // ---- WebSocket connection ----
-  const connectWs = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState <= 1) return;
-
-    setWsStatus('connecting');
-    setStatusMessage('Connecting...');
-
-    const ws = new WebSocket(serverUrl);
-    ws.binaryType = 'arraybuffer';
-
-    ws.onopen = () => {
-      setWsStatus('connected');
-      setStatusMessage('Connected — tap Start Streaming');
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        handleServerMessage(data);
-      } catch {
-        // Not JSON, ignore
-      }
-    };
-
-    ws.onerror = () => {
-      setWsStatus('error');
-      setStatusMessage('Connection failed — check server');
-    };
-
-    ws.onclose = () => {
-      setWsStatus('disconnected');
-      setIsStreaming(false);
-      cameraRef.current?.stopCapture();
-      setStatusMessage('Disconnected');
-    };
-
-    wsRef.current = ws;
-  }, [serverUrl]);
-
-  const disconnectWs = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    setIsStreaming(false);
-    cameraRef.current?.stopCapture();
-    setWsStatus('disconnected');
-    setStatusMessage('Disconnected');
-  }, []);
 
   // ---- Handle server messages ----
   const handleServerMessage = useCallback((data) => {
     if (data.type === 'connected') {
-      setStatusMessage('Engine ready — tap Start Streaming');
+      // Engine ready — start streaming automatically
+      cameraRef.current?.startCapture();
       return;
     }
 
-    if (data.type === 'error') {
-      setStatusMessage(data.message || 'Server error');
-      return;
-    }
+    if (data.type === 'error') return;
 
     if (data.frame_index) {
       setFrameCount(data.frame_index);
@@ -333,7 +278,6 @@ export const PlayScreen = ({ navigation }) => {
         if (data.audio_text) {
           announce(data.audio_text);
         }
-        setStatusMessage(data.message || `Point: ${data.point_awarded_to}`);
       }
     }
   }, [awardPoint, addCall, setBallPosition]);
@@ -349,22 +293,65 @@ export const PlayScreen = ({ navigation }) => {
     }
   }, []);
 
-  const toggleStreaming = useCallback(() => {
-    if (isStreaming) {
-      cameraRef.current?.stopCapture();
-      setIsStreaming(false);
-      setStatusMessage('Streaming paused');
-    } else {
-      cameraRef.current?.startCapture();
-      setIsStreaming(true);
-      setStatusMessage('Streaming...');
-    }
-  }, [isStreaming]);
+  // ---- Auto-connect with reconnect ----
+  const connectWs = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState <= 1) return;
 
-  // Cleanup on unmount
+    setWsStatus('connecting');
+
+    const ws = new WebSocket(DEFAULT_SERVER);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      setWsStatus('connected');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleServerMessage(data);
+      } catch {
+        // Not JSON, ignore
+      }
+    };
+
+    ws.onerror = () => {
+      setWsStatus('error');
+    };
+
+    ws.onclose = () => {
+      setWsStatus('disconnected');
+      cameraRef.current?.stopCapture();
+      // Auto-reconnect after 3 seconds
+      reconnectTimer.current = setTimeout(() => {
+        connectWs();
+      }, 3000);
+    };
+
+    wsRef.current = ws;
+  }, [handleServerMessage]);
+
+  const disconnectWs = useCallback(() => {
+    if (reconnectTimer.current) {
+      clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.onclose = null; // prevent auto-reconnect
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    cameraRef.current?.stopCapture();
+    setWsStatus('disconnected');
+  }, []);
+
+  // Auto-connect on mount, cleanup on unmount
   useEffect(() => {
+    connectWs();
     return () => {
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       if (wsRef.current) {
+        wsRef.current.onclose = null;
         wsRef.current.close();
         wsRef.current = null;
       }
@@ -390,7 +377,6 @@ export const PlayScreen = ({ navigation }) => {
   }
 
   // ---- Render ----
-  const isConnected = wsStatus === 'connected';
   const statusColor = {
     disconnected: '#888',
     connecting: '#FFA000',
@@ -457,48 +443,6 @@ export const PlayScreen = ({ navigation }) => {
         {/* Call banner */}
         <CallBanner call={currentCall} visible={showCallBanner} />
 
-        {/* Status bar overlay */}
-        <View style={styles.statusOverlay}>
-          <Text style={styles.statusText}>{statusMessage}</Text>
-          {isStreaming && <Text style={styles.frameText}>Frame: {frameCount}</Text>}
-        </View>
-      </View>
-
-      {/* Connection controls */}
-      <View style={styles.connectionBar}>
-        <TextInput
-          style={styles.serverInput}
-          value={serverUrl}
-          onChangeText={setServerUrl}
-          placeholder="ws://host:port/ws/referee"
-          placeholderTextColor="#666"
-          editable={!isConnected}
-        />
-        <View style={styles.connectionButtons}>
-          {!isConnected ? (
-            <TouchableOpacity
-              style={[styles.connBtn, { backgroundColor: '#4CAF50' }]}
-              onPress={connectWs}
-            >
-              <Text style={styles.connBtnText}>Connect</Text>
-            </TouchableOpacity>
-          ) : (
-            <>
-              <TouchableOpacity
-                style={[styles.connBtn, { backgroundColor: isStreaming ? '#FFA000' : '#2196F3' }]}
-                onPress={toggleStreaming}
-              >
-                <Text style={styles.connBtnText}>{isStreaming ? 'Pause' : 'Stream'}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.connBtn, { backgroundColor: '#f44336' }]}
-                onPress={disconnectWs}
-              >
-                <Text style={styles.connBtnText}>Stop</Text>
-              </TouchableOpacity>
-            </>
-          )}
-        </View>
       </View>
 
       {/* Score panel */}
@@ -660,61 +604,6 @@ const styles = StyleSheet.create({
     fontSize: 36,
     fontWeight: 'bold',
     textAlign: 'center',
-  },
-  statusOverlay: {
-    position: 'absolute',
-    bottom: 8,
-    left: 8,
-    right: 8,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-  },
-  statusText: {
-    color: '#ccc',
-    fontSize: 11,
-  },
-  frameText: {
-    color: '#aaa',
-    fontSize: 11,
-  },
-  connectionBar: {
-    backgroundColor: '#1a1a1a',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#333',
-  },
-  serverInput: {
-    flex: 1,
-    backgroundColor: '#222',
-    color: '#fff',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    fontSize: 12,
-    borderWidth: 1,
-    borderColor: '#444',
-  },
-  connectionButtons: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  connBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 6,
-  },
-  connBtnText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 13,
   },
   scorePanel: {
     backgroundColor: '#111',
