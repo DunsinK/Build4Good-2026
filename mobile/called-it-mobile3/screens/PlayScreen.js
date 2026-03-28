@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,20 +7,19 @@ import {
   SafeAreaView,
   Dimensions,
 } from 'react-native';
-import { Camera } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useGame } from '../GameContext';
 
 export const PlayScreen = ({ navigation }) => {
   const { currentGame, updateScore, endGame } = useGame();
-  const [hasPermission, setHasPermission] = useState(null);
+  const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
 
   useEffect(() => {
-    (async () => {
-      const { status } = await Camera.requestCameraPermissionsAsync();
-      setHasPermission(status === 'granted');
-    })();
-  }, []);
+    if (!permission?.granted) {
+      requestPermission();
+    }
+  }, [permission]);
 
   if (!currentGame) {
     return (
@@ -75,8 +74,8 @@ export const PlayScreen = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.container}>
       {/* Camera View */}
-      {hasPermission && (
-        <Camera style={styles.camera} ref={cameraRef} type={Camera.Constants.Type.back} />
+      {permission?.granted && (
+        <CameraView style={styles.camera} ref={cameraRef} facing="back" />
       )}
 
       {/* Score Overlay */}
