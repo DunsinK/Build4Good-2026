@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Pickleball AI Referee",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -71,6 +71,57 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ------------------------------------------------------------------
+# Normalised response helpers
+# ------------------------------------------------------------------
+
+_EMPTY_RESPONSE: dict = {
+    "type": "tracking",
+    "frame_index": None,
+    "ball_detected": False,
+    "ball_position": None,
+    "court_detected": False,
+    "bounce_detected": False,
+    "call": None,
+    "point_awarded_to": None,
+    "audio_text": None,
+    "confidence": 0.0,
+    "message": None,
+}
+
+
+def _normalise(**overrides) -> dict:
+    """Return a response dict that always conforms to the shared contract."""
+    return {**_EMPTY_RESPONSE, **overrides}
+
+
+def build_connected() -> dict:
+    return _normalise(type="connected", message="WebSocket connected")
+
+
+def build_error(message: str, frame_index: int | None = None) -> dict:
+    return _normalise(type="error", frame_index=frame_index, message=message)
+
+
+def build_response(engine_result: dict, score_result: dict | None = None) -> dict:
+    """Merge engine output and optional scoring into the normalised contract."""
+    resp = _normalise(
+        type=engine_result.get("type", "tracking"),
+        frame_index=engine_result.get("frame_index"),
+        ball_detected=engine_result.get("ball_detected", False),
+        ball_position=engine_result.get("ball_position"),
+        court_detected=engine_result.get("court_detected", False),
+        bounce_detected=engine_result.get("bounce_detected", False),
+        call=engine_result.get("call"),
+        confidence=engine_result.get("confidence", 0.0),
+        message=engine_result.get("message"),
+    )
+    if score_result:
+        resp["point_awarded_to"] = score_result.get("point_awarded_to")
+        resp["audio_text"] = score_result.get("audio_text")
+    return resp
 
 
 # ------------------------------------------------------------------
@@ -110,111 +161,69 @@ def decode_frame(data: bytes | str) -> np.ndarray:
 
 
 # ------------------------------------------------------------------
-# Response builder
-# ------------------------------------------------------------------
-
-def build_response(
-    engine_result: dict,
-    score_result: dict | None = None,
-) -> dict:
-    """Merge engine output and optional scoring into the normalised
-    response contract sent to the frontend."""
-    point_awarded_to = None
-    audio_text = None
-
-    if score_result:
-        point_awarded_to = score_result.get("point_awarded_to")
-        audio_text = score_result.get("audio_text")
-
-    return {
-        "type": engine_result.get("type", "tracking"),
-        "frame_index": engine_result.get("frame_index"),
-        "ball_detected": engine_result.get("ball_detected", False),
-        "ball_position": engine_result.get("ball_position"),
-        "court_detected": engine_result.get("court_detected", False),
-        "bounce_detected": engine_result.get("bounce_detected", False),
-        "call": engine_result.get("call"),
-        "point_awarded_to": point_awarded_to,
-        "audio_text": audio_text,
-        "confidence": engine_result.get("confidence", 0.0),
-        "message": engine_result.get("message"),
-    }
-
-
-def build_error(message: str, frame_index: int | None = None) -> dict:
-    return {
-        "type": "error",
-        "frame_index": frame_index,
-        "ball_detected": False,
-        "ball_position": None,
-        "court_detected": False,
-        "bounce_detected": False,
-        "call": None,
-        "point_awarded_to": None,
-        "audio_text": None,
-        "confidence": 0.0,
-        "message": message,
-    }
-
-
-def build_connected() -> dict:
-    return {
-        "type": "connected",
-        "frame_index": None,
-        "ball_detected": False,
-        "ball_position": None,
-        "court_detected": False,
-        "bounce_detected": False,
-        "call": None,
-        "point_awarded_to": None,
-        "audio_text": None,
-        "confidence": 0.0,
-        "message": "Engine ready — start streaming frames",
-    }
-
-
-# ------------------------------------------------------------------
 # WebSocket — real-time frame streaming
 # ------------------------------------------------------------------
 
 @app.websocket("/ws/referee")
 async def referee_ws(ws: WebSocket):
     await ws.accept()
-    client = ws.client
-    logger.info("Client connected: %s", client)
+    client_id = f"{ws.client.host}:{ws.client.port}" if ws.client else "unknown"
+    logger.info("WS connect  | client=%s", client_id)
 
     engine = PickleballRefereeEngine()
     await ws.send_json(build_connected())
+    logger.info("WS ready    | client=%s | engine created", client_id)
 
     try:
         while True:
-            # Accept both binary and text messages
             msg = await ws.receive()
-            data = msg.get("bytes") or msg.get("text")
+
+            # Extract payload — prefer bytes, fall back to text
+            data: bytes | str | None = msg.get("bytes")
+            if data is None:
+                data = msg.get("text")
             if data is None:
                 continue
 
+            # --- Decode frame ---
             try:
                 frame = decode_frame(data)
-            except (ValueError, Exception) as exc:
+            except Exception as exc:
+                logger.warning("WS decode error | client=%s | %s", client_id, exc)
                 await ws.send_json(build_error(str(exc), engine.frame_index))
                 continue
 
-            engine_result = engine.process_frame(frame)
+            # --- Run inference ---
+            try:
+                engine_result = engine.process_frame(frame)
+            except Exception as exc:
+                logger.exception("WS inference error | client=%s", client_id)
+                await ws.send_json(build_error(
+                    f"Inference failed: {exc}", engine.frame_index
+                ))
+                continue
 
+            # --- Score if rally ended ---
             score_result = None
             event = engine_result.get("event")
             if event and event.get("event_type") == "rally_end":
                 score_result = determine_point_winner(event)
                 engine.reset_rally()
+                logger.info(
+                    "WS decision | client=%s | frame=%d | reason=%s | point=%s",
+                    client_id,
+                    engine_result.get("frame_index", -1),
+                    event.get("reason"),
+                    score_result.get("point_awarded_to") if score_result else None,
+                )
 
-            response = build_response(engine_result, score_result)
-            await ws.send_json(response)
+            # --- Send normalised response ---
+            await ws.send_json(build_response(engine_result, score_result))
 
     except WebSocketDisconnect:
-        logger.info("Client disconnected: %s", client)
+        logger.info("WS disconnect | client=%s | frames_processed=%d", client_id, engine.frame_index)
     except Exception:
-        logger.exception("Unexpected error on WebSocket for %s", client)
+        logger.exception("WS fatal error | client=%s", client_id)
         try:
             await ws.close(code=1011, reason="Internal server error")
         except RuntimeError:
