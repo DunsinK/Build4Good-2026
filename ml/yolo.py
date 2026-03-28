@@ -131,6 +131,11 @@ class PickleballRefereeEngine:
         self._frames_since_bounce += 1
 
         preprocessed = self._preprocess_frame(frame)
+
+        # Skip all detection if the frame is too dark
+        if self._is_frame_too_dark(preprocessed):
+            return self._build_tracking_result(None, False, 0.0, None)
+
         self._detect_court(preprocessed)
         ball_pos = self._detect_ball(preprocessed)
 
@@ -174,6 +179,16 @@ class PickleballRefereeEngine:
         self._frames_since_bounce = 999
         self._predicted_pos = None
         self._velocity = (0.0, 0.0)
+
+    # ------------------------------------------------------------------
+    # Frame quality gate
+    # ------------------------------------------------------------------
+
+    def _is_frame_too_dark(self, frame: np.ndarray) -> bool:
+        """Reject frames that are too dark to reliably detect anything."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        mean_brightness = float(np.mean(gray))
+        return mean_brightness < 30
 
     # ------------------------------------------------------------------
     # Step 2 — Preprocessing (OpenCV)
@@ -267,16 +282,8 @@ class PickleballRefereeEngine:
                     )
                     return
 
-        # Fallback: use frame margins as approximate court boundary
-        if not self.court_detected:
-            mx, my = int(w * 0.08), int(h * 0.12)
-            self.court_polygon = np.array([
-                [mx, my], [w - mx, my],
-                [w - mx, h - my], [mx, h - my],
-            ], dtype=np.int32)
-            self.court_center_x = w // 2
-            self.court_detected = True
-            logger.info("Court fallback polygon (center_x=%d)", self.court_center_x)
+        # No fallback — if court lines aren't visible, don't guess.
+        # court_detected stays False, so no in/out calls will be made.
 
     # ------------------------------------------------------------------
     # Step 4 — Ball detection (HSV color + contour analysis)
@@ -297,11 +304,21 @@ class PickleballRefereeEngine:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         h, w = frame.shape[:2]
 
+        # Reject frames with very low saturation (grayscale/black scenes)
+        mean_saturation = float(np.mean(hsv[:, :, 1]))
+        if mean_saturation < 20:
+            return None
+
         # Build combined color mask
         combined_mask = np.zeros((h, w), dtype=np.uint8)
         for lower, upper in HSV_RANGES:
             mask = cv2.inRange(hsv, lower, upper)
             combined_mask = cv2.bitwise_or(combined_mask, mask)
+
+        # Reject if the mask has too many or too few pixels (noise or non-ball scene)
+        mask_ratio = float(np.count_nonzero(combined_mask)) / (h * w)
+        if mask_ratio > 0.25 or mask_ratio < 0.0001:
+            return None
 
         # Morphological cleanup
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -367,9 +384,12 @@ class PickleballRefereeEngine:
             if nearby:
                 candidates = nearby
 
-        # Pick the best candidate by confidence
+        # Pick the best candidate by confidence, require minimum 0.6
         best = max(candidates, key=lambda c: c[2])
         cx, cy, confidence, _ = best
+
+        if confidence < 0.6:
+            return None
 
         # Scale back to original frame dimensions if we resized
         if self._frame_h > 0 and self._frame_w > 0:
