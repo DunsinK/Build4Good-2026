@@ -131,6 +131,13 @@ export const PlayScreen = ({ navigation }) => {
       try {
         const data = JSON.parse(event.data);
 
+        // Auto-update score when point is awarded
+        if (data.point_awarded_to === 'left') {
+          updateScore(1, 1);
+        } else if (data.point_awarded_to === 'right') {
+          updateScore(2, 1);
+        }
+
         // Announce any referee call out loud
         if (data.audio_text) {
           announce(data.audio_text);
