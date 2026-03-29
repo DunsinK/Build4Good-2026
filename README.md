@@ -4,8 +4,11 @@ A real-time sports AI referee and score-caller built for the **Build4Good Hackat
 
 FairPlay uses computer vision to track the ball, detect bounces, make IN/OUT line calls, and announce which side got the point — all in real time from a phone camera.
 
+## Demo Video 
+[![FairPlay Demo Video](https://img.youtube.com/vi/Z3UByxiCfNE/maxresdefault.jpg)](https://youtu.be/Z3UByxiCfNE)
+
 ## Project Structure
-https://youtu.be/Z3UByxiCfNE
+
 
 ```
 ├── backend/
