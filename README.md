@@ -1,8 +1,8 @@
-# Called It — Pickleball AI Referee
+# FairPlay — Pickleball AI Referee
 
 A real-time pickleball AI referee and score-caller built for the **Build4Good Hackathon 2026**.
 
-Called It uses computer vision to track the ball, detect bounces, make IN/OUT line calls, and announce which side got the point — all in real time from a phone camera.
+FairPlay uses computer vision to track the ball, detect bounces, make IN/OUT line calls, and announce which side got the point — all in real time from a phone camera.
 
 ## Project Structure
 
