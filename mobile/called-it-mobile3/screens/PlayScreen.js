@@ -10,10 +10,8 @@ import {
 import * as Speech from 'expo-speech';
 import { useGame } from '../GameContext';
 
-// ─── Change this to your backend machine's local IP ───
-const BACKEND_IP = 'https://fairplay-0jo3.onrender.com';
-const WS_URL = `ws://${BACKEND_IP}:8000/ws/referee`;
-// ──────────────────────────────────────────────────────
+// Render deployment endpoint (secure WebSocket)
+const WS_URL = 'wss://fairplay-0jo3.onrender.com/ws/referee';
 
 let CameraView, useCameraPermissions;
 if (Platform.OS !== 'web') {

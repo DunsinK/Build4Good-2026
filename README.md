@@ -91,3 +91,8 @@ Press `w` to open in web, or scan the QR code with Expo Go on your phone.
 ## License
 
 MIT
+
+
+Docker Commands: 
+ docker build -t build4good-backend .
+> docker run --rm -p 8000:8000 --name build4good-backend build4good-backend
