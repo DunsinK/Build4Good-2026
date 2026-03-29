@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import * as Speech from 'expo-speech';
 import { useGame } from '../GameContext';
+import { LiveVisionCamera } from '../components/LiveVisionCamera';
 
 // ─── Backend connection ───
 // Deployed backend (default — works for everyone)
@@ -16,12 +17,9 @@ const WS_URL = 'wss://fairplay-0jo3.onrender.com/ws/referee';
 // Local dev: swap to your laptop WiFi IP → 'ws://YOUR_IP:8000/ws/referee'
 // ──────────────────────────────────────────────────────
 
-let CameraView, useCameraPermissions;
-if (Platform.OS !== 'web') {
-  const cam = require('expo-camera');
-  CameraView = cam.CameraView;
-  useCameraPermissions = cam.useCameraPermissions;
-}
+// Web: canvas → JPEG on an interval. Native: Vision Camera snapshots (~10 fps) in LiveVisionCamera.native.js.
+// Requires `npx expo run:android` / `run:ios` or EAS — not Expo Go (Vision Camera is a native module).
+const WEB_FRAME_INTERVAL_MS = 100;
 
 const announce = (message) => {
   Speech.speak(message, { rate: 1.0, pitch: 1.0 });
@@ -80,37 +78,20 @@ const WebCamera = () => {
   );
 };
 
-// ─── Native camera component ────────────────────────────────────
-const NativeCamera = React.forwardRef((props, ref) => {
-  const [permission, requestPermission] = useCameraPermissions();
-
-  if (!permission) {
-    return <View style={styles.cameraFeed} />;
-  }
-
-  if (!permission.granted) {
-    return (
-      <View style={styles.cameraPlaceholder}>
-        <Text style={styles.placeholderText}>Camera access needed</Text>
-        <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
-          <Text style={styles.permissionButtonText}>Grant Permission</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  return <CameraView ref={ref} style={styles.cameraFeed} facing="back" />;
-});
-
 // ─── Main screen ────────────────────────────────────────────────
 export const PlayScreen = ({ navigation }) => {
   const { currentGame, updateScore, endGame } = useGame();
   const wsRef = useRef(null);
-  const cameraRef = useRef(null);
   const [lastCall, setLastCall] = useState(null);
   const [wsStatus, setWsStatus] = useState('connecting');
 
-  // ── WebSocket + frame capture loop ──
+  const handleFrame = useCallback((payload) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(payload);
+  }, []);
+
+  // ── WebSocket + web canvas capture (native uses LiveVisionCamera) ──
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
@@ -149,10 +130,11 @@ export const PlayScreen = ({ navigation }) => {
       }
     };
 
-    const interval = setInterval(async () => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    let interval;
+    if (Platform.OS === 'web') {
+      interval = setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-      if (Platform.OS === 'web') {
         const video = document.querySelector('video');
         if (!video || !video.videoWidth) return;
 
@@ -168,27 +150,13 @@ export const PlayScreen = ({ navigation }) => {
             }
           },
           'image/jpeg',
-          0.7
+          0.65
         );
-      } else {
-        if (!cameraRef.current) return;
-        try {
-          const photo = await cameraRef.current.takePictureAsync({
-            base64: true,
-            quality: 0.4,
-            skipProcessing: true,
-          });
-          if (photo.base64 && ws.readyState === WebSocket.OPEN) {
-            ws.send(photo.base64);
-          }
-        } catch (err) {
-          console.warn('Frame capture error:', err);
-        }
-      }
-    }, 2000);
+      }, WEB_FRAME_INTERVAL_MS);
+    }
 
     return () => {
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
       ws.close();
     };
   }, []);
@@ -246,7 +214,16 @@ export const PlayScreen = ({ navigation }) => {
       </SafeAreaView>
 
       <View style={styles.cameraContainer}>
-        {Platform.OS === 'web' ? <WebCamera /> : <NativeCamera ref={cameraRef} />}
+        {Platform.OS === 'web' ? (
+          <WebCamera />
+        ) : (
+          <LiveVisionCamera
+            style={styles.cameraFeed}
+            isStreaming={wsStatus === 'connected'}
+            onFrame={handleFrame}
+            isActive
+          />
+        )}
 
         {/* AI status badge */}
         <View style={[styles.statusBadge, wsStatus === 'connected' ? styles.statusOn : styles.statusOff]}>
