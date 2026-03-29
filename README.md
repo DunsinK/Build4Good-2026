@@ -1,6 +1,6 @@
-# FairPlay — Pickleball AI Referee
+# FairPlay — Sports AI Referee
 
-A real-time pickleball AI referee and score-caller built for the **Build4Good Hackathon 2026**.
+A real-time sports AI referee and score-caller built for the **Build4Good Hackathon 2026**.
 
 FairPlay uses computer vision to track the ball, detect bounces, make IN/OUT line calls, and announce which side got the point — all in real time from a phone camera.
 
