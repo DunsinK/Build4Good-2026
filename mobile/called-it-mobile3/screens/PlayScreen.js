@@ -10,8 +10,11 @@ import {
 import * as Speech from 'expo-speech';
 import { useGame } from '../GameContext';
 
-// Render deployment endpoint (secure WebSocket)
+// ─── Backend connection ───
+// Deployed backend (default — works for everyone)
 const WS_URL = 'wss://fairplay-0jo3.onrender.com/ws/referee';
+// Local dev: swap to your laptop WiFi IP → 'ws://YOUR_IP:8000/ws/referee'
+// ──────────────────────────────────────────────────────
 
 let CameraView, useCameraPermissions;
 if (Platform.OS !== 'web') {
@@ -78,7 +81,7 @@ const WebCamera = () => {
 };
 
 // ─── Native camera component ────────────────────────────────────
-const NativeCamera = () => {
+const NativeCamera = React.forwardRef((props, ref) => {
   const [permission, requestPermission] = useCameraPermissions();
 
   if (!permission) {
@@ -96,20 +99,19 @@ const NativeCamera = () => {
     );
   }
 
-  return <CameraView style={styles.cameraFeed} facing="back" />;
-};
+  return <CameraView ref={ref} style={styles.cameraFeed} facing="back" />;
+});
 
 // ─── Main screen ────────────────────────────────────────────────
 export const PlayScreen = ({ navigation }) => {
   const { currentGame, updateScore, endGame } = useGame();
   const wsRef = useRef(null);
+  const cameraRef = useRef(null);
   const [lastCall, setLastCall] = useState(null);
   const [wsStatus, setWsStatus] = useState('connecting');
 
   // ── WebSocket + frame capture loop ──
   useEffect(() => {
-    if (Platform.OS !== 'web') return; // frame capture only works on web for now
-
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
@@ -129,14 +131,12 @@ export const PlayScreen = ({ navigation }) => {
       try {
         const data = JSON.parse(event.data);
 
-        // Auto-update score when point is awarded
         if (data.point_awarded_to === 'left') {
           updateScore(1, 1);
         } else if (data.point_awarded_to === 'right') {
           updateScore(2, 1);
         }
 
-        // Announce any referee call out loud
         if (data.audio_text) {
           announce(data.audio_text);
           setLastCall(data.audio_text);
@@ -149,27 +149,42 @@ export const PlayScreen = ({ navigation }) => {
       }
     };
 
-    // Send a frame every 2 seconds
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-      const video = document.querySelector('video');
-      if (!video || !video.videoWidth) return;
+      if (Platform.OS === 'web') {
+        const video = document.querySelector('video');
+        if (!video || !video.videoWidth) return;
 
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      canvas.getContext('2d').drawImage(video, 0, 0);
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
 
-      canvas.toBlob(
-        (blob) => {
-          if (blob && ws.readyState === WebSocket.OPEN) {
-            ws.send(blob);
+        canvas.toBlob(
+          (blob) => {
+            if (blob && ws.readyState === WebSocket.OPEN) {
+              ws.send(blob);
+            }
+          },
+          'image/jpeg',
+          0.7
+        );
+      } else {
+        if (!cameraRef.current) return;
+        try {
+          const photo = await cameraRef.current.takePictureAsync({
+            base64: true,
+            quality: 0.4,
+            skipProcessing: true,
+          });
+          if (photo.base64 && ws.readyState === WebSocket.OPEN) {
+            ws.send(photo.base64);
           }
-        },
-        'image/jpeg',
-        0.7
-      );
+        } catch (err) {
+          console.warn('Frame capture error:', err);
+        }
+      }
     }, 2000);
 
     return () => {
@@ -231,7 +246,7 @@ export const PlayScreen = ({ navigation }) => {
       </SafeAreaView>
 
       <View style={styles.cameraContainer}>
-        {Platform.OS === 'web' ? <WebCamera /> : <NativeCamera />}
+        {Platform.OS === 'web' ? <WebCamera /> : <NativeCamera ref={cameraRef} />}
 
         {/* AI status badge */}
         <View style={[styles.statusBadge, wsStatus === 'connected' ? styles.statusOn : styles.statusOff]}>
