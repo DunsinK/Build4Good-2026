@@ -4,7 +4,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { StatusBar } from 'expo-status-bar';
 import { GameProvider } from './GameContext';
-import { StartScreen, PlayScreen, HistoryScreen } from './screens';
+import { HomeScreen, GameSelectScreen, StartScreen, PlayScreen, HistoryScreen } from './screens';
 
 const Stack = createStackNavigator();
 
@@ -13,8 +13,11 @@ const AppNavigator = () => {
     <Stack.Navigator
       screenOptions={{
         headerShown: false,
+        cardStyle: { backgroundColor: '#0B0E1A' },
       }}
     >
+      <Stack.Screen name="Home" component={HomeScreen} />
+      <Stack.Screen name="GameSelect" component={GameSelectScreen} />
       <Stack.Screen name="Start" component={StartScreen} />
       <Stack.Screen name="Play" component={PlayScreen} />
       <Stack.Screen name="History" component={HistoryScreen} />
@@ -28,7 +31,7 @@ export default function App() {
       <NavigationContainer>
         <AppNavigator />
       </NavigationContainer>
-      <StatusBar style="auto" />
+      <StatusBar style="light" />
     </GameProvider>
   );
 }

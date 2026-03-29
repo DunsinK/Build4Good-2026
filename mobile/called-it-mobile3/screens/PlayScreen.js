@@ -10,13 +10,9 @@ import {
 import * as Speech from 'expo-speech';
 import { useGame } from '../GameContext';
 
-// ─── Backend connection ───
 const WS_URL = 'wss://fairplay-0jo3.onrender.com/ws/referee';
-// Local dev: 'ws://YOUR_LAN_IP:8000/ws/referee'
-// ──────────────────────────────────────────────────────
 
 const WEB_FRAME_INTERVAL_MS = 100;
-/** expo-camera takePictureAsync — ~4 fps practical max on many devices */
 const NATIVE_FRAME_INTERVAL_MS = 250;
 
 let CameraView, useCameraPermissions;
@@ -193,12 +189,14 @@ export const PlayScreen = ({ navigation }) => {
 
   if (!currentGame) {
     return (
-      <SafeAreaView style={styles.containerLight}>
+      <SafeAreaView style={styles.containerEmpty}>
         <View style={styles.centerContent}>
+          <Text style={styles.noGameIcon}>🎮</Text>
           <Text style={styles.noGameText}>No game in progress</Text>
           <TouchableOpacity
             style={styles.homeButton}
-            onPress={() => navigation.navigate('Start')}
+            onPress={() => navigation.navigate('Home')}
+            activeOpacity={0.85}
           >
             <Text style={styles.homeButtonText}>← Back to Home</Text>
           </TouchableOpacity>
@@ -213,6 +211,20 @@ export const PlayScreen = ({ navigation }) => {
     announce(points > 0 ? `${teamName} scored a point` : `${teamName} lost a point`);
   };
 
+  /* DEMO GHOST BUTTONS — remove these for production */
+  const handleDemoPointLeft = () => {
+    updateScore(1, 1);
+    announce('Point left');
+    setLastCall('Point Left');
+  };
+
+  /* DEMO GHOST BUTTONS — remove these for production */
+  const handleDemoPointRight = () => {
+    updateScore(2, 1);
+    announce('Point right');
+    setLastCall('Point Right');
+  };
+
   const handleEndGame = () => {
     const t1 = currentGame.team1;
     const t2 = currentGame.team2;
@@ -224,17 +236,17 @@ export const PlayScreen = ({ navigation }) => {
       announce('Game over. It is a tie');
     }
     endGame();
-    navigation.navigate('Start');
+    navigation.navigate('Home');
   };
 
   return (
     <View style={styles.container}>
       <SafeAreaView style={styles.safeTop}>
         <View style={styles.topBar}>
-          <TouchableOpacity onPress={() => navigation.navigate('Start')}>
+          <TouchableOpacity onPress={() => navigation.navigate('Home')}>
             <Text style={styles.navButton}>← Home</Text>
           </TouchableOpacity>
-          <Text style={styles.topTitle}>Called It</Text>
+          <Text style={styles.topTitle}>Fair Play</Text>
           <TouchableOpacity onPress={() => navigation.navigate('History')}>
             <Text style={styles.navButton}>History →</Text>
           </TouchableOpacity>
@@ -249,6 +261,18 @@ export const PlayScreen = ({ navigation }) => {
             {wsStatus === 'connected' ? '● AI Referee On' : wsStatus === 'connecting' ? '○ Connecting...' : '✕ AI Offline'}
           </Text>
         </View>
+
+        {/* DEMO GHOST BUTTONS — remove this block for production (invisible, tap top-left / bottom-left of camera) */}
+        <TouchableOpacity
+          style={styles.ghostButtonTop}
+          onPress={handleDemoPointLeft}
+          activeOpacity={1}
+        />
+        <TouchableOpacity
+          style={styles.ghostButtonBottom}
+          onPress={handleDemoPointRight}
+          activeOpacity={1}
+        />
 
         {lastCall && (
           <View style={styles.callOverlay}>
@@ -302,8 +326,8 @@ export const PlayScreen = ({ navigation }) => {
           </View>
         </View>
 
-        <TouchableOpacity style={styles.endButton} onPress={handleEndGame}>
-          <Text style={styles.endButtonText}>⏹ End Game</Text>
+        <TouchableOpacity style={styles.endButton} onPress={handleEndGame} activeOpacity={0.85}>
+          <Text style={styles.endButtonText}>End Game</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -311,67 +335,84 @@ export const PlayScreen = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000', flexDirection: 'column' },
-  containerLight: { flex: 1, backgroundColor: '#fff' },
-  safeTop: { backgroundColor: '#111' },
+  container: { flex: 1, backgroundColor: '#0B0E1A', flexDirection: 'column' },
+  containerEmpty: { flex: 1, backgroundColor: '#0B0E1A' },
+  safeTop: { backgroundColor: '#111218' },
   topBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: '#111',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#111218',
   },
-  topTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  navButton: { color: '#007AFF', fontSize: 14, fontWeight: '600' },
+  topTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '700' },
+  navButton: { color: '#6366F1', fontSize: 14, fontWeight: '600' },
   cameraContainer: { flex: 1, overflow: 'hidden', minHeight: 0 },
   cameraFeed: { flex: 1 },
   cameraPlaceholder: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#131625',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  placeholderText: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 8 },
-  placeholderSubtext: { color: '#888', fontSize: 14, textAlign: 'center', paddingHorizontal: 40 },
+  placeholderText: { color: '#E2E8F0', fontSize: 18, fontWeight: '700', marginBottom: 8 },
+  placeholderSubtext: { color: '#64748B', fontSize: 14, textAlign: 'center', paddingHorizontal: 40 },
   permissionButton: {
     marginTop: 16,
-    backgroundColor: '#007AFF',
+    backgroundColor: '#6366F1',
     paddingHorizontal: 24,
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 10,
   },
-  permissionButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  permissionButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   statusBadge: {
     position: 'absolute',
     top: 12,
     right: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 20,
   },
-  statusOn: { backgroundColor: 'rgba(76, 175, 80, 0.85)' },
-  statusOff: { backgroundColor: 'rgba(100, 100, 100, 0.85)' },
-  statusText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+  statusOn: { backgroundColor: 'rgba(16, 185, 129, 0.88)' },
+  statusOff: { backgroundColor: 'rgba(71, 85, 105, 0.88)' },
+  statusText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+
+  /* DEMO GHOST BUTTONS — remove these styles for production (invisible tap targets) */
+  ghostButtonTop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 80,
+    height: 80,
+  },
+  ghostButtonBottom: {
+    position: 'absolute',
+    bottom: 50,
+    left: 0,
+    width: 80,
+    height: 80,
+  },
+
   callOverlay: {
     position: 'absolute',
     bottom: 16,
     left: 16,
     right: 16,
-    backgroundColor: 'rgba(255, 59, 0, 0.88)',
+    backgroundColor: 'rgba(99, 102, 241, 0.92)',
     paddingVertical: 10,
     paddingHorizontal: 16,
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: 'center',
   },
-  callText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  callText: { color: '#fff', fontSize: 17, fontWeight: '700' },
   scorePanel: {
-    backgroundColor: '#111',
+    backgroundColor: '#111218',
     paddingHorizontal: 16,
     paddingVertical: 14,
-    paddingBottom: 24,
+    paddingBottom: 28,
     borderTopWidth: 1,
-    borderTopColor: '#333',
+    borderTopColor: 'rgba(255,255,255,0.06)',
     flexShrink: 0,
   },
   teamRow: {
@@ -380,25 +421,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 8,
   },
-  teamInfo: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
-  teamName: { color: '#fff', fontSize: 16, fontWeight: 'bold', minWidth: 80 },
-  scoreValue: { color: '#FF6B6B', fontSize: 32, fontWeight: 'bold' },
+  teamInfo: { flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 },
+  teamName: { color: '#CBD5E1', fontSize: 15, fontWeight: '700', minWidth: 80 },
+  scoreValue: { color: '#A5B4FC', fontSize: 32, fontWeight: '800' },
   scoreButtons: { flexDirection: 'row', gap: 8 },
-  scoreBtn: { borderRadius: 8, paddingVertical: 10, paddingHorizontal: 18, alignItems: 'center' },
-  plusBtn: { backgroundColor: '#4CAF50' },
-  minusBtn: { backgroundColor: '#f44336' },
-  scoreBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  divider: { height: 1, backgroundColor: '#333', marginVertical: 4 },
+  scoreBtn: { borderRadius: 10, paddingVertical: 10, paddingHorizontal: 18, alignItems: 'center' },
+  plusBtn: { backgroundColor: '#10B981' },
+  minusBtn: { backgroundColor: '#EF4444' },
+  scoreBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  divider: { height: 1, backgroundColor: 'rgba(255,255,255,0.06)', marginVertical: 4 },
   endButton: {
-    backgroundColor: '#f44336',
-    paddingVertical: 12,
-    borderRadius: 8,
+    backgroundColor: '#EF4444',
+    paddingVertical: 14,
+    borderRadius: 12,
     alignItems: 'center',
     marginTop: 12,
   },
-  endButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  noGameText: { fontSize: 18, fontWeight: 'bold', color: '#000', marginBottom: 20 },
-  homeButton: { backgroundColor: '#007AFF', padding: 12, borderRadius: 8, paddingHorizontal: 20 },
-  homeButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  endButtonText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
+  noGameIcon: { fontSize: 48, marginBottom: 16 },
+  noGameText: { fontSize: 18, fontWeight: '700', color: '#CBD5E1', marginBottom: 24 },
+  homeButton: { backgroundColor: '#6366F1', padding: 14, borderRadius: 12, paddingHorizontal: 28 },
+  homeButtonText: { color: '#fff', fontWeight: '700', fontSize: 16 },
 });
