@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -9,23 +9,27 @@ import {
 } from 'react-native';
 import * as Speech from 'expo-speech';
 import { useGame } from '../GameContext';
-import { LiveVisionCamera } from '../components/LiveVisionCamera';
 
 // ─── Backend connection ───
-// Deployed backend (default — works for everyone)
 const WS_URL = 'wss://fairplay-0jo3.onrender.com/ws/referee';
-// Local dev: swap to your laptop WiFi IP → 'ws://YOUR_IP:8000/ws/referee'
+// Local dev: 'ws://YOUR_LAN_IP:8000/ws/referee'
 // ──────────────────────────────────────────────────────
 
-// Web: canvas → JPEG on an interval. Native: Vision Camera snapshots (~10 fps) in LiveVisionCamera.native.js.
-// Requires `npx expo run:android` / `run:ios` or EAS — not Expo Go (Vision Camera is a native module).
 const WEB_FRAME_INTERVAL_MS = 100;
+/** expo-camera takePictureAsync — ~4 fps practical max on many devices */
+const NATIVE_FRAME_INTERVAL_MS = 250;
+
+let CameraView, useCameraPermissions;
+if (Platform.OS !== 'web') {
+  const cam = require('expo-camera');
+  CameraView = cam.CameraView;
+  useCameraPermissions = cam.useCameraPermissions;
+}
 
 const announce = (message) => {
   Speech.speak(message, { rate: 1.0, pitch: 1.0 });
 };
 
-// ─── Web camera component ───────────────────────────────────────
 const WebCamera = () => {
   const videoRef = useRef(null);
   const [error, setError] = useState(null);
@@ -78,35 +82,42 @@ const WebCamera = () => {
   );
 };
 
-// ─── Main screen ────────────────────────────────────────────────
+const NativeCamera = React.forwardRef((props, ref) => {
+  const [permission, requestPermission] = useCameraPermissions();
+
+  if (!permission) {
+    return <View style={styles.cameraFeed} />;
+  }
+
+  if (!permission.granted) {
+    return (
+      <View style={styles.cameraPlaceholder}>
+        <Text style={styles.placeholderText}>Camera access needed</Text>
+        <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
+          <Text style={styles.permissionButtonText}>Grant Permission</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return <CameraView ref={ref} style={styles.cameraFeed} facing="back" />;
+});
+
 export const PlayScreen = ({ navigation }) => {
   const { currentGame, updateScore, endGame } = useGame();
   const wsRef = useRef(null);
+  const cameraRef = useRef(null);
+  const captureInFlightRef = useRef(false);
   const [lastCall, setLastCall] = useState(null);
   const [wsStatus, setWsStatus] = useState('connecting');
 
-  const handleFrame = useCallback((payload) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(payload);
-  }, []);
-
-  // ── WebSocket + web canvas capture (native uses LiveVisionCamera) ──
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
-    ws.onopen = () => {
-      setWsStatus('connected');
-    };
-
-    ws.onclose = () => {
-      setWsStatus('disconnected');
-    };
-
-    ws.onerror = () => {
-      setWsStatus('error');
-    };
+    ws.onopen = () => setWsStatus('connected');
+    ws.onclose = () => setWsStatus('disconnected');
+    ws.onerror = () => setWsStatus('error');
 
     ws.onmessage = (event) => {
       try {
@@ -130,11 +141,12 @@ export const PlayScreen = ({ navigation }) => {
       }
     };
 
-    let interval;
-    if (Platform.OS === 'web') {
-      interval = setInterval(() => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const tickMs = Platform.OS === 'web' ? WEB_FRAME_INTERVAL_MS : NATIVE_FRAME_INTERVAL_MS;
 
+    const interval = setInterval(async () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      if (Platform.OS === 'web') {
         const video = document.querySelector('video');
         if (!video || !video.videoWidth) return;
 
@@ -152,16 +164,33 @@ export const PlayScreen = ({ navigation }) => {
           'image/jpeg',
           0.65
         );
-      }, WEB_FRAME_INTERVAL_MS);
-    }
+      } else {
+        if (!cameraRef.current || captureInFlightRef.current) return;
+        captureInFlightRef.current = true;
+        try {
+          const photo = await cameraRef.current.takePictureAsync({
+            base64: true,
+            quality: 0.35,
+            skipProcessing: true,
+            shutterSound: false,
+          });
+          if (photo.base64 && ws.readyState === WebSocket.OPEN) {
+            ws.send(photo.base64);
+          }
+        } catch (err) {
+          console.warn('Frame capture error:', err);
+        } finally {
+          captureInFlightRef.current = false;
+        }
+      }
+    }, tickMs);
 
     return () => {
-      if (interval) clearInterval(interval);
+      clearInterval(interval);
       ws.close();
     };
   }, []);
 
-  // ── No game guard ──
   if (!currentGame) {
     return (
       <SafeAreaView style={styles.containerLight}>
@@ -198,7 +227,6 @@ export const PlayScreen = ({ navigation }) => {
     navigation.navigate('Start');
   };
 
-  // ── Render ──
   return (
     <View style={styles.container}>
       <SafeAreaView style={styles.safeTop}>
@@ -214,25 +242,14 @@ export const PlayScreen = ({ navigation }) => {
       </SafeAreaView>
 
       <View style={styles.cameraContainer}>
-        {Platform.OS === 'web' ? (
-          <WebCamera />
-        ) : (
-          <LiveVisionCamera
-            style={styles.cameraFeed}
-            isStreaming={wsStatus === 'connected'}
-            onFrame={handleFrame}
-            isActive
-          />
-        )}
+        {Platform.OS === 'web' ? <WebCamera /> : <NativeCamera ref={cameraRef} />}
 
-        {/* AI status badge */}
         <View style={[styles.statusBadge, wsStatus === 'connected' ? styles.statusOn : styles.statusOff]}>
           <Text style={styles.statusText}>
             {wsStatus === 'connected' ? '● AI Referee On' : wsStatus === 'connecting' ? '○ Connecting...' : '✕ AI Offline'}
           </Text>
         </View>
 
-        {/* Last call overlay */}
         {lastCall && (
           <View style={styles.callOverlay}>
             <Text style={styles.callText}>{lastCall}</Text>
