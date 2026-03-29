@@ -1,4 +1,4 @@
-# Called It — Pickleball AI Referee
+# FairPlay — Pickleball AI Referee
 
 A real-time pickleball AI referee and score-caller built for the **Build4Good Hackathon 2026**.
 
