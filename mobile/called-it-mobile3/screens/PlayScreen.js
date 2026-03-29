@@ -211,20 +211,6 @@ export const PlayScreen = ({ navigation }) => {
     announce(points > 0 ? `${teamName} scored a point` : `${teamName} lost a point`);
   };
 
-  /* DEMO GHOST BUTTONS — remove these for production */
-  const handleDemoPointLeft = () => {
-    updateScore(1, 1);
-    announce('Point left');
-    setLastCall('Point Left');
-  };
-
-  /* DEMO GHOST BUTTONS — remove these for production */
-  const handleDemoPointRight = () => {
-    updateScore(2, 1);
-    announce('Point right');
-    setLastCall('Point Right');
-  };
-
   const handleEndGame = () => {
     const t1 = currentGame.team1;
     const t2 = currentGame.team2;
@@ -261,18 +247,6 @@ export const PlayScreen = ({ navigation }) => {
             {wsStatus === 'connected' ? '● AI Referee On' : wsStatus === 'connecting' ? '○ Connecting...' : '✕ AI Offline'}
           </Text>
         </View>
-
-        {/* DEMO GHOST BUTTONS — remove this block for production (invisible, tap top-left / bottom-left of camera) */}
-        <TouchableOpacity
-          style={styles.ghostButtonTop}
-          onPress={handleDemoPointLeft}
-          activeOpacity={1}
-        />
-        <TouchableOpacity
-          style={styles.ghostButtonBottom}
-          onPress={handleDemoPointRight}
-          activeOpacity={1}
-        />
 
         {lastCall && (
           <View style={styles.callOverlay}>
@@ -377,22 +351,6 @@ const styles = StyleSheet.create({
   statusOn: { backgroundColor: 'rgba(16, 185, 129, 0.88)' },
   statusOff: { backgroundColor: 'rgba(71, 85, 105, 0.88)' },
   statusText: { color: '#fff', fontSize: 12, fontWeight: '700' },
-
-  /* DEMO GHOST BUTTONS — remove these styles for production (invisible tap targets) */
-  ghostButtonTop: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    width: 80,
-    height: 80,
-  },
-  ghostButtonBottom: {
-    position: 'absolute',
-    bottom: 50,
-    left: 0,
-    width: 80,
-    height: 80,
-  },
 
   callOverlay: {
     position: 'absolute',
