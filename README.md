@@ -33,7 +33,7 @@ FairPlay uses computer vision to track the ball, detect bounces, make IN/OUT lin
 
 ## How It Works
 
-1. Open the app and tap **AI Referee**
+1. Open the app and select which sport your playing
 2. Connect to the backend WebSocket server
 3. Start streaming — the camera sends frames at ~4 fps
 4. The backend runs each frame through the ML pipeline:
